@@ -63,7 +63,9 @@ function NF_buildCountryLeadtime() {
 }
 
 function NF_getPackagesData_(ss) {
-  const sh = ss.getSheetByName('Packages');
+  // Use TARGET_SHEET constant if available, fallback to 'Packages'
+  const sheetName = (typeof TARGET_SHEET !== 'undefined') ? TARGET_SHEET : 'Packages';
+  const sh = ss.getSheetByName(sheetName);
   if (!sh || sh.getLastRow() < 2) return [];
   const data = sh.getDataRange().getDisplayValues();
   const hdr = data[0]; const rows = data.slice(1);
@@ -82,7 +84,20 @@ function NF_getPackagesData_(ss) {
 }
 
 function NF_getPowerBIData_(ss) {
-  const sh = ss.getSheetByName('PBI_Outbound_Staging') || ss.getSheetByName('PowerBI_Import') || ss.getSheetByName('PowerBI_New');
+  // Try multiple possible PowerBI sheet names, with PBI_STAGING_SHEET constant support
+  const possibleNames = [
+    (typeof PBI_STAGING_SHEET !== 'undefined') ? PBI_STAGING_SHEET : null,
+    'PBI_Outbound_Staging',
+    'PowerBI_Import', 
+    'PowerBI_New'
+  ].filter(name => name); // Remove null values
+  
+  let sh = null;
+  for (const name of possibleNames) {
+    sh = ss.getSheetByName(name);
+    if (sh) break;
+  }
+  
   if (!sh || sh.getLastRow() < 2) return [];
   const data = sh.getDataRange().getDisplayValues();
   const hdr = data[0]; const rows = data.slice(1);
@@ -344,9 +359,11 @@ function NF_writeWeeklyKPI_(sheet, weeklyKPI) {
  */
 function NF_buildSokKarkkainenWeekly() {
   const ss = SpreadsheetApp.getActive();
-  const sourceSheet = ss.getSheetByName('Packages');
+  // Use TARGET_SHEET constant if available, fallback to 'Packages'
+  const sheetName = (typeof TARGET_SHEET !== 'undefined') ? TARGET_SHEET : 'Packages';
+  const sourceSheet = ss.getSheetByName(sheetName);
   if (!sourceSheet || sourceSheet.getLastRow() < 2) {
-    SpreadsheetApp.getUi().alert('NewFlow: Packages-taulukko on tyhjä');
+    SpreadsheetApp.getUi().alert(`NewFlow: ${sheetName}-taulukko on tyhjä tai puuttuu`);
     return;
   }
   
@@ -367,8 +384,8 @@ function NF_buildSokKarkkainenWeekly() {
   });
   
   // Split by payer
-  const sokAccount = NF_Prop_('SOK_FREIGHT_ACCOUNT', '990719901');
-  const karkkainenNumbers = NF_Prop_('KARKKAINEN_NUMBERS', '615471,802669,7030057').split(',').map(s => s.trim());
+  const sokAccount = (typeof SOK_FREIGHT_ACCOUNT !== 'undefined') ? SOK_FREIGHT_ACCOUNT : NF_Prop_('SOK_FREIGHT_ACCOUNT', '990719901');
+  const karkkainenNumbers = (typeof KARKKAINEN_NUMBERS !== 'undefined') ? KARKKAINEN_NUMBERS : NF_Prop_('KARKKAINEN_NUMBERS', '615471,802669,7030057').split(',').map(s => s.trim());
   
   const sokRows = [];
   const karkkainenRows = [];
