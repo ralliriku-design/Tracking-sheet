@@ -1,0 +1,293 @@
+/** 10_pbi_drive_import.gs — Power BI Outbound -tiedostojen tuonti Drive-kansiosta
+ *  - pbiImportOutbounds_OldestFirst(): käy läpi PBI_FOLDER_ID -kansion tiedostot vanhimmasta uusimpaan
+ *    • CSV / Google Sheets -tuki (yksi tiedosto nyt: "Outbound order - 2025-09-15T135227.827")
+ *    • Dublikaatti (sisällöltään identtinen) → siirretään "Duplicates"-kansioon
+ *    • Muuten: tuodaan stagingiin (välilehti "PBI_Outbound_Staging") ja siirretään "Processed"-kansioon
+ *  - pbiImport_ReindexHeaders(): varmistaa stagingin headerien yhdenmukaisuuden (tarvittaessa)
+ *
+ * Huom: Ei vaadi Advanced Drive -palvelua; .xlsx-konversio ei ole mukana tässä versiossa.
+ *       Suositus: vie Power BI:stä CSV tai Google Sheet -muotoon.
+ */
+
+if (typeof PBI_PROP_MD5KEY === 'undefined')    var PBI_PROP_MD5KEY    = 'PBI_FILE_MD5_SET_JSON';
+if (typeof PBI_STAGING_SHEET === 'undefined')  var PBI_STAGING_SHEET  = 'PBI_Outbound_Staging';
+if (typeof PBI_PROCESSED_DIR === 'undefined')  var PBI_PROCESSED_DIR  = 'Processed';
+if (typeof PBI_DUPLICATES_DIR === 'undefined') var PBI_DUPLICATES_DIR = 'Duplicates';
+if (typeof PBI_ERRORS_DIR === 'undefined')     var PBI_ERRORS_DIR     = 'Errors';
+
+/** ——— Julkiset ——— */
+
+/** Aja: käy läpi kaikki “Outbound order …” -tiedostot PBI-kansiosta, vanhimmasta uusimpaan. */
+function pbiImportOutbounds_OldestFirst(){
+  const folder = _pbi_getFolder_();
+  if (!folder){ SpreadsheetApp.getUi().alert('PBI_FOLDER_ID puuttuu. Aseta se ensin.'); return; }
+
+  // Tee alikansiot
+  const processed = _pbi_getOrMakeSubfolder_(folder, PBI_PROCESSED_DIR);
+  const dups      = _pbi_getOrMakeSubfolder_(folder, PBI_DUPLICATES_DIR);
+  const errors    = _pbi_getOrMakeSubfolder_(folder, PBI_ERRORS_DIR);
+
+  const files = _pbi_listOutboundFilesOldestFirst_(folder);
+  if (!files.length){
+    SpreadsheetApp.getUi().alert('PBI-kansiossa ei ole “Outbound order …” -tiedostoja.');
+    return;
+  }
+
+  // Lataa jo käsiteltyjen md5:t muistista
+  const md5set = _pbi_loadMd5Set_();
+
+  let importedRows = 0, movedDup = 0, movedErr = 0, fileCount = 0;
+
+  files.forEach(file => {
+    const name = file.getName();
+    fileCount++;
+
+    // Laske md5 hash sisällöstä → dublikaattien tunnistus tiedostotasolla
+    let md5 = '';
+    try{
+      const blob = file.getBlob();
+      md5 = _pbi_md5hex_(blob.getBytes());
+    }catch(e){
+      _pbi_safeMove_(file, errors);
+      movedErr++;
+      return;
+    }
+
+    if (md5 && md5set.has(md5)){
+      _pbi_safeMove_(file, dups);
+      movedDup++;
+      return;
+    }
+
+    // Importoi stagingiin
+    try{
+      const rows = _pbi_readFileToRows_(file); // Array<Array<any>> (header + data)
+      if (rows && rows.length){
+        importedRows += _pbi_appendToStaging_(rows, name, file.getId());
+      }
+      // Siirrä käsiteltyihin
+      _pbi_safeMove_(file, processed);
+      // Tallenna md5
+      if (md5) { md5set.add(md5); _pbi_saveMd5Set_(md5set); }
+    }catch(err){
+      // Siirrä virheellisiin
+      _pbi_safeMove_(file, errors);
+      movedErr++;
+    }
+  });
+
+  SpreadsheetApp.getUi().alert(
+    'PBI-tuonti valmis.\n' +
+    `Tiedostoja: ${fileCount}\n` +
+    `Tuotu rivejä: ${importedRows}\n` +
+    `Dublikaatteja (siirretty "${PBI_DUPLICATES_DIR}") : ${movedDup}\n` +
+    `Virheellisiä (siirretty "${PBI_ERRORS_DIR}") : ${movedErr}`
+  );
+}
+
+/** Varmista stagingin headerien järjestys ja uniikkius (harvoin tarvitset tätä). */
+function pbiImport_ReindexHeaders(){
+  const ss = SpreadsheetApp.getActive();
+  let sh = ss.getSheetByName(PBI_STAGING_SHEET);
+  if (!sh) { SpreadsheetApp.getUi().alert('Staging-välilehteä ei ole.'); return; }
+
+  const rng = sh.getDataRange();
+  const vals = rng.getValues();
+  if (vals.length < 1) return;
+  const header = vals[0].map(v=>String(v||'').trim());
+
+  // Poista duplikaattiotsikot säilyttäen ensimmäisen
+  const seen = new Set();
+  const uniques = header.map((h, i) => {
+    let t = h || ('Col'+(i+1));
+    if (!seen.has(t)) { seen.add(t); return t; }
+    // tee uniikiksi
+    let k = 2;
+    while (seen.has(`${t} (${k})`)) k++;
+    const u = `${t} (${k})`;
+    seen.add(u);
+    return u;
+  });
+
+  sh.getRange(1,1,1,uniques.length).setValues([uniques]);
+  if (uniques.length < header.length){
+    // tyhjennä ylimääräisten otsikoiden sarakkeet
+    const extra = header.length - uniques.length;
+    sh.deleteColumns(uniques.length+1, extra);
+  }
+  sh.setFrozenRows(1);
+  sh.autoResizeColumns(1, uniques.length);
+  SpreadsheetApp.getUi().alert('Staging-headerit normalisoitu.');
+}
+
+/** ——— Ydin & apurit ——— */
+
+// Hae PBI-kansio ScriptPropertiesista
+function _pbi_getFolder_(){
+  const id = PropertiesService.getScriptProperties().getProperty('PBI_FOLDER_ID');
+  if (!id) return null;
+  try { return DriveApp.getFolderById(id); } catch(e){ return null; }
+}
+
+// Hae / luo alikansio
+function _pbi_getOrMakeSubfolder_(parent, name){
+  const it = parent.getFoldersByName(name);
+  if (it.hasNext()) return it.next();
+  return parent.createFolder(name);
+}
+
+// Listaa “Outbound order …” -tiedostot (CSV tai Google Sheet) vanhimmasta uusimpaan
+function _pbi_listOutboundFilesOldestFirst_(folder){
+  const files = [];
+  const it = folder.getFiles();
+  while (it.hasNext()){
+    const f = it.next();
+    const n = f.getName();
+    if (!/^Outbound order/i.test(n)) continue;
+    const mime = f.getMimeType() || '';
+    // tuetaan CSV ja Google Sheets. (xlsx jätetään tällä erää väliin)
+    if (mime.indexOf('text/csv') !== -1 || mime.indexOf('application/vnd.google-apps.spreadsheet') !== -1){
+      files.push(f);
+    } else if (/\.csv$/i.test(n)) {
+      files.push(f);
+    }
+  }
+  // vanhimmasta uusimpaan
+  files.sort((a,b)=> a.getDateCreated().getTime() - b.getDateCreated().getTime());
+  return files;
+}
+
+// Lue tiedosto rows[][]-muotoon (header + data)
+function _pbi_readFileToRows_(file){
+  const mime = file.getMimeType() || '';
+  if (mime.indexOf('application/vnd.google-apps.spreadsheet') !== -1){
+    // Google Sheet → ensimmäinen välilehti
+    const ss = SpreadsheetApp.openById(file.getId());
+    const sh = ss.getSheets()[0];
+    return sh.getDataRange().getValues();
+  }
+  // CSV (oletus)
+  const content = file.getBlob().getDataAsString('UTF-8');
+  // Yritä jakaa riveittäin turvallisesti
+  const lines = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+  const rows = [];
+  for (var i=0;i<lines.length;i++){
+    const line = lines[i];
+    if (line == null) continue;
+    // Utilities.parseCsv hoitaa erikoismerkit & lainausmerkit
+    const parsed = Utilities.parseCsv(line, ',');
+    if (parsed && parsed.length) rows.push(parsed);
+  }
+  // Poista mahdolliset tyhjät trailing-rivit
+  while (rows.length && rows[rows.length-1].every(v => String(v||'').trim() === '')) rows.pop();
+  return rows;
+}
+
+// Lisää stagingiin: union-header + SourceFileName/Id/ImportedAt -metat
+function _pbi_appendToStaging_(rows, fileName, fileId){
+  if (!rows || !rows.length) return 0;
+  const header = rows[0].map(v => String(v||'').trim());
+  const data = rows.slice(1);
+
+  const ss = SpreadsheetApp.getActive();
+  let sh = ss.getSheetByName(PBI_STAGING_SHEET);
+  if (!sh) sh = ss.insertSheet(PBI_STAGING_SHEET);
+
+  // Hae nykyinen header stagingista
+  const existing = sh.getLastRow() ? sh.getRange(1,1,1,sh.getLastColumn()).getValues()[0].map(v=>String(v||'')) : [];
+  // Lisämetat mitä aina lisätään loppuun
+  const metaCols = ['SourceFileName','SourceFileId','ImportedAt'];
+
+  // Rakenna union-header (säilytä olemassa oleva järjestys, lisää uudet perään)
+  const union = existing.length ? existing.slice() : header.slice();
+  header.forEach(h => { if (union.indexOf(h) === -1) union.push(h); });
+  metaCols.forEach(h => { if (union.indexOf(h) === -1) union.push(h); });
+
+  // Jos header muuttui → kirjoita uusi header ja laajenna sarakkeet
+  if (!existing.length){
+    sh.clear();
+    sh.getRange(1,1,1,union.length).setValues([union]);
+    sh.setFrozenRows(1);
+  } else if (union.length > existing.length){
+    sh.getRange(1, existing.length+1, 1, union.length-existing.length).setValues([union.slice(existing.length)]);
+  }
+
+  // Mapit
+  const idxUnion = {}; union.forEach((h,i)=>idxUnion[h]=i);
+  const idxSrc   = { name: idxUnion['SourceFileName'], id: idxUnion['SourceFileId'], ts: idxUnion['ImportedAt'] };
+  const nowStr = Utilities.formatDate(new Date(), Session.getScriptTimeZone()||'Europe/Helsinki', 'yyyy-MM-dd HH:mm:ss');
+
+  // Muunna datarivit unioniin
+  const out = new Array(data.length);
+  for (var r=0;r<data.length;r++){
+    const row = data[r];
+    const line = new Array(union.length).fill('');
+    for (var c=0;c<header.length;c++){
+      const h = header[c];
+      const uIdx = idxUnion[h];
+      if (uIdx >= 0) line[uIdx] = row[c];
+    }
+    line[idxSrc.name] = fileName;
+    line[idxSrc.id]   = fileId;
+    line[idxSrc.ts]   = nowStr;
+    out[r] = line;
+  }
+
+  // Kirjoita loppuun
+  const startRow = sh.getLastRow() ? (sh.getLastRow() + 1) : 2;
+  if (startRow === 2 && sh.getLastRow() === 0){
+    // varmistus: jos sheet oli tyhjä
+    sh.getRange(1,1,1,union.length).setValues([union]);
+    sh.setFrozenRows(1);
+  }
+  sh.getRange(startRow, 1, out.length, union.length).setValues(out);
+
+  // Muotoilua
+  try{
+    sh.getRange(1,1,1,union.length).setFontWeight('bold').setBackground('#f6f8fa');
+    sh.autoResizeColumns(1, union.length);
+    sh.getRange(2, union.length-2, sh.getLastRow()-1, 1).setNumberFormat('@'); // SourceFileId tekstiksi
+    sh.getRange(2, union.length, sh.getLastRow()-1, 1).setNumberFormat('yyyy-mm-dd hh:mm:ss'); // ImportedAt
+  }catch(e){}
+
+  return out.length;
+}
+
+// Siirrä tiedosto turvallisesti toiseen kansioon (poista vanha kopio samannimisestä kohteesta)
+function _pbi_safeMove_(file, toFolder){
+  try{
+    const parents = file.getParents();
+    // Kopio DriveApp APIssa: file.moveTo(...) siirtää ensimmäiseen par. → käytetään add/remove -mallia:
+    toFolder.addFile(file);
+    while (parents.hasNext()) {
+      const p = parents.next();
+      if (p.getId() !== toFolder.getId()) p.removeFile(file);
+    }
+  }catch(e){}
+}
+
+// MD5-heksi
+function _pbi_md5hex_(bytes){
+  const digest = Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, bytes);
+  return digest.map(function(b){
+    const s = (b & 0xFF).toString(16);
+    return (s.length===1 ? '0' : '') + s;
+  }).join('');
+}
+
+// Lataa & tallenna md5-set
+function _pbi_loadMd5Set_(){
+  const P = PropertiesService.getScriptProperties();
+  const raw = P.getProperty(PBI_PROP_MD5KEY);
+  try{
+    const arr = raw ? JSON.parse(raw) : [];
+    return new Set(Array.isArray(arr) ? arr : []);
+  }catch(e){
+    return new Set();
+  }
+}
+function _pbi_saveMd5Set_(set){
+  const P = PropertiesService.getScriptProperties();
+  const arr = Array.from(set.values());
+  P.setProperty(PBI_PROP_MD5KEY, JSON.stringify(arr));
+}

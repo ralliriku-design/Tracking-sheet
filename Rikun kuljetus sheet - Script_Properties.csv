@@ -1,0 +1,72 @@
+Key,Value,Masked,Length
+ACTION_SHEET,Vaatii_toimenpiteitä,Vaatii_toimenpiteitä,20
+ARCHIVE_SHEET,Packages_Archive,Packages_Archive,16
+AUTO_SCAN_ORDER,"posti,gls,matkahuolto,dhl,bring","posti,gls,matkahuolto,dhl,bring",31
+BRING_CLIENT_URL,https://omaappisi.fi,https://omaappisi.fi,20
+BRING_KEY,5db5bcb9-d8ca-471b-89f2-db625f965228,5db5bc...5228 (len:36),36
+BRING_TRACK_URL,https://api.bring.com/tracking/api/v2/tracking.json?q={{code}},https://api.bring.com/tracking/api/v2/tracking.json?q={{code}},62
+BRING_UID,riku.ralli@ip-agency.fi,riku.ralli@ip-agency.fi,23
+BULKJOB|Vaatii_toimenpiteitä,"{""sheet"":""Vaatii_toimenpiteitä"",""row"":290,""calls"":250,""started"":1757969740080,""total"":1254}","{""sheet"":""Vaatii_toimenpiteitä"",""row"":290,""calls"":250,""started"":1757969740080,""total"":1254}",91
+BULK_BACKOFF_MINUTES_BASE,30,30,2
+BULK_MAX_API_CALLS_PER_RUN,300,300,3
+CACHE_EPOCH,1757933011106,1757933011106,13
+CARRIER_DEFAULT_COL,25,25,2
+CARRIER_HEADER_HINT,"Carrier, Handled by","Carrier, Handled by",19
+DEDUP_JOIN_CARRIER,FALSE,FALSE,5
+DHL_API_KEY,MC4grRiZ7dDsokW2ltPG1Qfj17d0enZA,MC4grR...enZA (len:32),32
+DHL_TRACK_URL,https://api-eu.dhl.com/track/shipments?trackingNumber={{code}},https://api-eu.dhl.com/track/shipments?trackingNumber={{code}},62
+DISPATCH_METRICS,TRUE,TRUE,4
+GLS_BASIC,,,0
+GLS_FI_API_KEY,vAUg0en8vKC6wufKwGWxIw8hL23IfuzL4u14Ioce9PkFkAqQgnnYTvfFyjnONWzR,vAUg0e...NWzR (len:64),64
+GLS_FI_METHOD,POST,POST,4
+GLS_FI_SENDER_ID,"006112,007413,007380,007529,007488,007580,007951,007952","006112,007413,007380,007529,007488,007580,007951,007952",55
+GLS_FI_SENDER_IDS,"006112,007413,007380,007529,007488,007580,007951,007952","006112,007413,007380,007529,007488,007580,007951,007952",55
+GLS_FI_TRACK_URL,https://<gls-fi-host>/customerapi/v2/get_tracking_events?senderId={{sender}}&parcelNo={{code}},https://<gls-fi-host>/customerapi/v2/get_tracking_events?senderId={{sender}}&parcelNo={{code}},94
+GLS_TOKEN_URL,https://api.gls-group.net/oauth2/v2/token,https://api.gls-group.net/oauth2/v2/token,41
+GLS_TRACK_URL,https://api.gls-group.net/track-and-trace-v1/tracking/simple/references/{{code}},https://api.gls-group.net/track-and-trace-v1/tracking/simple/references/{{code}},80
+GMAIL_QUERY_PACKAGES,"label:""package report"" OR subject:""Packages Report"" newer_than:90d","label:""package report"" OR subject:""Packages Report"" newer_than:90d",66
+KK_PASTE_SHEET,KK_Paste,KK_Paste,8
+LAST_BRING_TS,1757932404971,1757932404971,13
+LAST_DHL_TS,1757932404971,1757932404971,13
+LAST_GLS_TS,1757932404971,1757932404971,13
+LAST_KAUKOKIITO_TS,1757932404971,1757932404971,13
+LAST_MATKAHUOLTO_TS,1757932404971,1757932404971,13
+LAST_POSTI_TS,1757932404971,1757932404971,13
+MH_BASIC,OTQwMzI3Njp5MHRmWkd3ZGpp,OTQwMz...ZGpp (len:24),24
+MH_TRACK_URL,https://extservices.matkahuolto.fi/mpaketti/public/tracking?ids={{code}},https://extservices.matkahuolto.fi/mpaketti/public/tracking?ids={{code}},72
+PAUSE_UNTIL_DHL FINLAND (FI),1757972219028,1757972219028,13
+PAUSE_UNTIL_POSTI,1757852729898,1757852729898,13
+PBI_FOLDER_ID,1G6OyD9vNKq2DTT2YlNfGc48Mt3QPA_Un,1G6OyD9vNKq2DTT2YlNfGc48Mt3QPA_Un,33
+POSTI_BASIC,bWFfMDk5MzE2MzdfNVA6NEliTzZwTFR1QzF2T2hpMmlwUkk=,bWFfMD...Ukk= (len:48),48
+POSTI_TOKEN_URL,https://oauth2.posti.com/oauth/token,https://oauth2.posti.com/oauth/token,36
+POSTI_TRACK_URL,https://api.posti.fi/tracking/7/shipments/trackingnumbers/{{code}},https://api.posti.fi/tracking/7/shipments/trackingnumbers/{{code}},66
+POSTI_TRK_BASIC,bWFfMDk5MzE2MzdfMVA6WmF0dUNFOGlzUGVTdGxTaWpsNHU=,bWFfMD...NHU= (len:48),48
+POSTI_TRK_PASS,ZatuCE8isPeStlSijl4u,ZatuCE...jl4u (len:20),20
+POSTI_TRK_URL,https://atlas.posti.fi/track-shipment-json?ShipmentId={{code}},https://atlas.posti.fi/track-shipment-json?ShipmentId={{code}},62
+POSTI_TRK_USER,ma_09931637_1P,ma_09931637_1P,14
+PSTG_MOVE_BATCH_ROWS,1000,1000,4
+PSTG_SCHED_ACTIVE,TRUE,TRUE,4
+PSTG_SCHED_DELAY_MS,360000,360000,6
+RATE_LAST_BRING,1757971469065,1757971469065,13
+RATE_LAST_DHL,1757971451044,1757971451044,13
+RATE_LAST_DHL FINLAND (FI),1757970547746,1757970547746,13
+RATE_LAST_GLS,1757971738959,1757971738959,13
+RATE_LAST_GLS FINLAND (FI),1757970769518,1757970769518,13
+RATE_LAST_KAUKOKIITO (FI),1757970739076,1757970739076,13
+RATE_LAST_MATKAHUOLTO,1757971303577,1757971303577,13
+RATE_LAST_MATKAHUOLTO (FI),1757970755616,1757970755616,13
+RATE_LAST_POSTI,1757971744052,1757971744052,13
+RATE_LAST_POSTI API (FI),1757970415307,1757970415307,13
+RATE_LAST_POSTI OY (FI),1757970767440,1757970767440,13
+RATE_MINMS_BRING,800,800,3
+RATE_MINMS_DHL,800,800,3
+RATE_MINMS_GLS,800,800,3
+RATE_MINMS_MATKAHUOLTO,500,500,3
+RATE_MINMS_POSTI,500,500,3
+REFRESH_COOLDOWN_MS,21600000,21600000,8
+REFRESH_MIN_AGE_MINUTES,0,0,1
+SLA_OPEN_DAYS,5,5,1
+SLA_PD_DAYS,5,5,1
+TARGET_SHEET,Packages,Packages,8
+TRACKING_DEFAULT_COL,1,1,1
+TRACKING_HEADER_HINT,Package Number,Package Number,14

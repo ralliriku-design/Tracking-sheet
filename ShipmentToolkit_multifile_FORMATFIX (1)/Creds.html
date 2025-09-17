@@ -1,0 +1,104 @@
+<? var p = this.props || {}; ?>
+<!doctype html>
+<meta charset="utf-8">
+<title>Integraatioavaimet</title>
+<style>
+  :root { --pad: 10px; --gap: 8px; --font: 14px system-ui, -apple-system, Segoe UI, Roboto, Arial; }
+  body { font: var(--font); margin: 0; color: #111; }
+  header { padding: 14px 16px; border-bottom: 1px solid #e5e7eb; background:#fafafa; }
+  h1 { font-size: 18px; margin: 0; }
+  .wrap { padding: 16px; }
+  .row { display: grid; grid-template-columns: 220px 1fr; gap: var(--gap); align-items: center; margin: 6px 0; }
+  label { color:#374151; font-size:13px; }
+  input[type="text"], input[type="password"] { width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 8px; font: var(--font); }
+  .muted { color:#6b7280; font-size:12px; }
+  .btns { display:flex; gap:10px; margin-top: 12px; }
+  button { padding:8px 12px; border:1px solid #d1d5db; background:#fff; border-radius:10px; cursor:pointer; }
+  button.primary { background:#111827; color:#fff; border-color:#111827; }
+  details { border:1px solid #e5e7eb; border-radius:12px; padding: 8px 12px; margin-top: 14px; }
+  summary { cursor:pointer; font-weight:600; }
+  .grid { display:grid; grid-template-columns: 1fr 1fr; gap: 12px 18px; margin-top: 10px; }
+  .grid .row { grid-template-columns: 200px 1fr; }
+  .hint { font-size: 12px; color:#374151; margin: 4px 0 0 0; }
+  .hr { height:1px; background:#e5e7eb; margin: 14px 0; }
+</style>
+<header>
+  <h1>Integraatioavaimet</h1>
+</header>
+<div class="wrap">
+  <div class="row">
+    <label for="GMAIL_QUERY">GMAIL_QUERY</label>
+    <input id="GMAIL_QUERY" name="GMAIL_QUERY" type="text" value="<?= p.GMAIL_QUERY || '' ?>" placeholder='esim. label:ShipmentReports OR subject:(Outbound) OR filename:(Outbound)' />
+  </div>
+
+  <div class="row"><label for="TRACKING_HEADER_HINT">TRACKING_HEADER_HINT</label>
+    <input id="TRACKING_HEADER_HINT" name="TRACKING_HEADER_HINT" type="text" value="<?= p.TRACKING_HEADER_HINT || '' ?>" placeholder='esim. "Package number", "Package no"' />
+  </div>
+  <div class="row"><label for="TRACKING_DEFAULT_COL">TRACKING_DEFAULT_COL</label>
+    <input id="TRACKING_DEFAULT_COL" name="TRACKING_DEFAULT_COL" type="text" value="<?= p.TRACKING_DEFAULT_COL || '' ?>" placeholder="1 = sarake A" />
+  </div>
+  
+  <div class="row"><label for="CARRIER_HEADER_HINT">CARRIER_HEADER_HINT</label>
+    <input id="CARRIER_HEADER_HINT" name="CARRIER_HEADER_HINT" type="text" value="<?= p.CARRIER_HEADER_HINT || '' ?>" placeholder='esim. "Carrier", "Logistics provider", "Courier"' />
+  </div>
+<div class="row"><label for="ATTACH_ALLOW_REGEX">ATTACH_ALLOW_REGEX</label>
+    <input id="ATTACH_ALLOW_REGEX" name="ATTACH_ALLOW_REGEX" type="text" value="<?= p.ATTACH_ALLOW_REGEX || '' ?>" placeholder='regex esim. (?:^|\b)(Packages[ _-]?Report)(?:\b|$)' />
+  </div>
+  <div class="row"><label for="REFRESH_MIN_AGE_MINUTES">REFRESH_MIN_AGE_MINUTES</label>
+    <input id="REFRESH_MIN_AGE_MINUTES" name="REFRESH_MIN_AGE_MINUTES" type="text" value="<?= p.REFRESH_MIN_AGE_MINUTES || '' ?>" placeholder="kuinka vanha (min) ennen uutta päivitystä" />
+  </div>
+  <p class="muted">Vinkki: luo Gmailiin label (esim. <b>ShipmentReports</b>) ja lisää se säännöllä Outbound-raportteihin. Pidä haku tiukkana, niin historia-tuonti on nopea.</p>
+
+  <div class="btns">
+    <button class="primary" onclick="save()">Tallenna</button>
+    <button onclick="seed()">Täytä oletukset</button>
+    <button onclick="flush()">Tyhjennä välimuisti</button>
+  </div>
+
+  <div class="hr"></div>
+
+  <details>
+    <summary>Lisäasetukset (kuljetusyhtiöt & Power BI)</summary>
+    <div class="grid">
+      <div class="row"><label>MH_TRACK_URL</label><input name="MH_TRACK_URL" value="<?= p.MH_TRACK_URL || '' ?>" type="text"></div>
+      <div class="row"><label>MH_BASIC</label><input name="MH_BASIC" value="<?= p.MH_BASIC || '' ?>" type="text"></div>
+
+      <div class="row"><label>POSTI_TOKEN_URL</label><input name="POSTI_TOKEN_URL" value="<?= p.POSTI_TOKEN_URL || '' ?>" type="text"></div>
+      <div class="row"><label>POSTI_BASIC</label><input name="POSTI_BASIC" value="<?= p.POSTI_BASIC || '' ?>" type="text"></div>
+      <div class="row"><label>POSTI_TRACK_URL</label><input name="POSTI_TRACK_URL" value="<?= p.POSTI_TRACK_URL || '' ?>" type="text"></div>
+      <div class="row"><label>POSTI_TRK_URL</label><input name="POSTI_TRK_URL" value="<?= p.POSTI_TRK_URL || '' ?>" type="text"></div>
+      <div class="row"><label>POSTI_TRK_BASIC</label><input name="POSTI_TRK_BASIC" value="<?= p.POSTI_TRK_BASIC || '' ?>" type="text"></div>
+      <div class="row"><label>POSTI_TRK_USER</label><input name="POSTI_TRK_USER" value="<?= p.POSTI_TRK_USER || '' ?>" type="text"></div>
+      <div class="row"><label>POSTI_TRK_PASS</label><input name="POSTI_TRK_PASS" value="<?= p.POSTI_TRK_PASS || '' ?>" type="password"></div>
+
+      <div class="row"><label>GLS_FI_TRACK_URL</label><input name="GLS_FI_TRACK_URL" value="<?= p.GLS_FI_TRACK_URL || '' ?>" type="text"></div>
+      <div class="row"><label>GLS_FI_API_KEY</label><input name="GLS_FI_API_KEY" value="<?= p.GLS_FI_API_KEY || '' ?>" type="text"></div>
+      <div class="row"><label>GLS_FI_SENDER_ID</label><input name="GLS_FI_SENDER_ID" value="<?= p.GLS_FI_SENDER_ID || '' ?>" type="text"></div>
+      <div class="row"><label>GLS_FI_SENDER_IDS</label><input name="GLS_FI_SENDER_IDS" value="<?= p.GLS_FI_SENDER_IDS || '' ?>" type="text"></div>
+      <div class="row"><label>GLS_FI_METHOD</label><input name="GLS_FI_METHOD" value="<?= p.GLS_FI_METHOD || '' ?>" type="text" placeholder="POST tai GET"></div>
+
+      <div class="row"><label>GLS_TOKEN_URL</label><input name="GLS_TOKEN_URL" value="<?= p.GLS_TOKEN_URL || '' ?>" type="text"></div>
+      <div class="row"><label>GLS_BASIC</label><input name="GLS_BASIC" value="<?= p.GLS_BASIC || '' ?>" type="text"></div>
+      <div class="row"><label>GLS_TRACK_URL</label><input name="GLS_TRACK_URL" value="<?= p.GLS_TRACK_URL || '' ?>" type="text"></div>
+
+      <div class="row"><label>DHL_TRACK_URL</label><input name="DHL_TRACK_URL" value="<?= p.DHL_TRACK_URL || '' ?>" type="text"></div>
+      <div class="row"><label>DHL_API_KEY</label><input name="DHL_API_KEY" value="<?= p.DHL_API_KEY || '' ?>" type="text"></div>
+
+      <div class="row"><label>BRING_TRACK_URL</label><input name="BRING_TRACK_URL" value="<?= p.BRING_TRACK_URL || '' ?>" type="text"></div>
+      <div class="row"><label>BRING_UID</label><input name="BRING_UID" value="<?= p.BRING_UID || '' ?>" type="text"></div>
+      <div class="row"><label>BRING_KEY</label><input name="BRING_KEY" value="<?= p.BRING_KEY || '' ?>" type="text"></div>
+      <div class="row"><label>BRING_CLIENT_URL</label><input name="BRING_CLIENT_URL" value="<?= p.BRING_CLIENT_URL || '' ?>" type="text"></div>
+
+      <div class="row"><label>BULK_BACKOFF_MINUTES_BASE</label><input name="BULK_BACKOFF_MINUTES_BASE" value="<?= p.BULK_BACKOFF_MINUTES_BASE || '' ?>" type="text"></div>
+      <div class="row"><label>PBI_WEBHOOK_URL</label><input name="PBI_WEBHOOK_URL" value="<?= p.PBI_WEBHOOK_URL || '' ?>" type="text"></div>
+    </div>
+    <p class="hint">Jätä kenttä tyhjäksi poistaaksesi asetuksen Script Properties -varastosta.</p>
+  </details>
+</div>
+
+<script>
+function collect(){ const data = {}; document.querySelectorAll('input[name]').forEach(el => data[el.name] = el.value || ''); return data; }
+function save(){ google.script.run.withSuccessHandler(res => { alert(res && res.ok ? 'Tallennettu.' : ('Virhe: ' + (res && res.msg))); }).credSaveProps(collect()); }
+function seed(){ google.script.run.seedKnownAccountsAndKeys(); }
+function flush(){ google.script.run.trkClearCache(); }
+</script>

@@ -1,0 +1,335 @@
+/** 12_staging_precheck_move.gs — PBI staging → prechecked siivuina (merkinnät + siirto)
+ *  - Laskee: Tracking_Normalized, ExistsIn, Skip_Fetch
+ *  - Kirjoittaa merkinnät stagingiin (vain käsiteltävään siivuun)
+ *  - Kopioi siivun uuteen välilehteen PBI_Outbound_Prechecked
+ *  - Poistaa siivun stagingista (deleteRows), jolloin seuraavalla ajokerralla jatkuu seuraavasta lohkosta
+ *
+ *  ScriptProperties (valinnaiset):
+ *    PSTG_MOVE_BATCH_ROWS  — rivimäärä / batch (oletus 1000; voit käyttää 10000)
+ *    PSTG_MOVE_MAX_MS      — aikabudjetti per loop-ajo (oletus 240000ms)
+ */
+
+const PSTG_PRECHECK_TARGET_SHEET = 'PBI_Outbound_Prechecked';
+
+/** Aja tämä: pyörii aikabudjetin (MAX_MS) puitteissa useita batch-eriä. */
+function PSTG_precheck_MoveLoop(){
+  const P = PropertiesService.getScriptProperties();
+  const maxMs   = Math.max(10000, parseInt(P.getProperty('PSTG_MOVE_MAX_MS') || '10000', 10));
+  const deadline = Date.now() + maxMs;
+
+  let totalMoved = 0, totalDeleted = 0, loops = 0;
+  while (Date.now() < deadline){
+    const res = PSTG_precheck_MoveBatch();
+    loops++;
+    totalMoved   += res.moved;
+    totalDeleted += res.deleted;
+    if (res.moved === 0) break; // ei lisää rivejä käsiteltäväksi
+    Utilities.sleep(100); // kevyt hengähdys
+  }
+  PSTG__ui(`Precheck & move valmis/paussi.\nKierroksia: ${loops}\nSiirretty rivejä: ${totalMoved}\nPoistettu stagingista: ${totalDeleted}`);
+}
+
+/** Suorita yksi siivu: laske merkinnät + kopioi precheckediin + poista siivu stagingista. */
+function PSTG_precheck_MoveBatch(){
+  const ss = SpreadsheetApp.getActive();
+  const staging = ss.getSheetByName('PBI_Outbound_Staging');
+  if (!staging) { PSTG__ui('PBI_Outbound_Staging puuttuu.'); return {moved:0, deleted:0}; }
+
+  // Lähde-indeksit (Packages & Archive → Set<normTracking>)
+  const indexSets = {};
+  ['Packages','Packages_Archive'].forEach(name=>{
+    const sh = ss.getSheetByName(name);
+    if (!sh) return;
+    const { hdr, iTrack } = _pstg_getHeaderAndTrackingIndex_(sh);
+    if (iTrack < 0) return;
+    const lastRow = sh.getLastRow();
+    if (lastRow < 2) return;
+    const raw = sh.getRange(2, iTrack+1, lastRow-1, 1).getValues();
+    const disp = sh.getRange(2, iTrack+1, lastRow-1, 1).getDisplayValues();
+    const set = new Set();
+    for (let r=0;r<raw.length;r++){
+      const norm = PSTG__normTracking(raw[r][0] != null && raw[r][0] !== '' ? raw[r][0] : disp[r][0]);
+      if (norm) set.add(norm);
+    }
+    indexSets[name] = set;
+  });
+
+  // Staging header + varmista tulossarakkeet
+  const lastCol = staging.getLastColumn();
+  if (!lastCol) return {moved:0, deleted:0};
+
+  let hdr = staging.getRange(1,1,1,lastCol).getValues()[0].map(v=>String(v||'').trim());
+  const H   = PSTG__hdrMap(hdr).indexOf;
+  const iTrack = H(['tracking','trackingnumber','tracking no','seuranta','code','koodi','viite',
+                    'reference','parcelno','parcel number','package number','packagenumber',
+                    'consignment no','consignment']);
+  if (iTrack < 0){ PSTG__ui('Staging: seurantakoodin sarake ei löytynyt.'); return {moved:0, deleted:0}; }
+
+  // Output-kolumnit
+  let iNorm = hdr.indexOf('Tracking_Normalized');
+  let iExist= hdr.indexOf('ExistsIn');
+  let iSkip = hdr.indexOf('Skip_Fetch');
+  let mutatedHdr = false;
+  if (iNorm === -1){ hdr.push('Tracking_Normalized'); iNorm = hdr.length-1; mutatedHdr = true; }
+  if (iExist=== -1){ hdr.push('ExistsIn');            iExist= hdr.length-1; mutatedHdr = true; }
+  if (iSkip === -1){ hdr.push('Skip_Fetch');          iSkip = hdr.length-1; mutatedHdr = true; }
+  if (mutatedHdr){
+    _pstg_ensureCapacity_(staging, 1, hdr.length);
+    staging.getRange(1,1,1,hdr.length).setValues([hdr]);
+    staging.setFrozenRows(1);
+  }
+
+  const lastRow = staging.getLastRow();
+  if (lastRow < 2) return {moved:0, deleted:0};
+
+  // Batch-koko
+  const P = PropertiesService.getScriptProperties();
+  const batchRows = Math.max(200, parseInt(P.getProperty('PSTG_MOVE_BATCH_ROWS') || '1000', 10)); // voit asettaa 10000
+
+  // Käsiteltävä lohko on rivi 2..(2+batch-1) — eli aina alku siirretään pois, jolloin lehti kevenee
+  const start = 2;
+  const take  = Math.min(batchRows, lastRow - 1);
+  if (take <= 0) return {moved:0, deleted:0};
+
+  const dataRange = staging.getRange(start, 1, take, hdr.length);
+  const rows = dataRange.getValues();
+  const shows= staging.getRange(start, 1, take, Math.max(iTrack+1, 1)).getDisplayValues(); // riittää track-col asti
+
+  // Laske merkinnät tähän batchiin
+  for (let r=0;r<rows.length;r++){
+    const raw  = rows[r][iTrack];
+    const disp = shows[r][iTrack];
+    const norm = PSTG__normTracking(raw != null && raw !== '' ? raw : disp);
+    rows[r][iNorm] = norm;
+
+    let where = [];
+    if (norm){
+      if (indexSets['Packages'] && indexSets['Packages'].has(norm)) where.push('Packages');
+      if (indexSets['Packages_Archive'] && indexSets['Packages_Archive'].has(norm)) where.push('Packages_Archive');
+    }
+    rows[r][iExist] = where.join('+');
+    rows[r][iSkip]  = where.length > 0 ? true : false;
+  }
+
+  // Kirjoita merkinnät takaisin stagingiin tälle siivulle (chunkataan kirjoitus)
+  _pstg_writeRowsChunked_(staging, start, 1, rows, hdr.length, 1000);
+
+  // Luo/avaa kohdevälilehti & varmista sama header
+  let target = ss.getSheetByName(PSTG_PRECHECK_TARGET_SHEET);
+  if (!target) target = ss.insertSheet(PSTG_PRECHECK_TARGET_SHEET);
+
+  // Synkkaa header targetiin (jos tyhjä → kopioi, jos eri pituus → laajenna)
+  const tLastCol = target.getLastColumn();
+  if (!tLastCol){
+    _pstg_ensureCapacity_(target, 1, hdr.length);
+    target.getRange(1,1,1,hdr.length).setValues([hdr]);
+    target.setFrozenRows(1);
+  } else {
+    const thdr = target.getRange(1,1,1,tLastCol).getValues()[0].map(v=>String(v||'').trim());
+    if (thdr.length < hdr.length){
+      _pstg_ensureCapacity_(target, 1, hdr.length);
+      // täydennä puuttuvat otsikot
+      target.getRange(1,1,1,hdr.length).setValues([hdr]);
+    }
+  }
+
+  // Appendaa batch targetiin chunkattuina
+  const tStart = target.getLastRow() + 1;
+  _pstg_writeRowsChunked_(target, tStart, 1, rows, hdr.length, 1000);
+
+  // Poista tämä block stagingista yhdellä operaatiolla (nopea koska yhtenäinen)
+  staging.deleteRows(start, take);
+
+  // Pientä formatointia
+  try{
+    target.getRange(1,1,1,hdr.length).setFontWeight('bold').setBackground('#f6f8fa');
+    target.autoResizeColumns(1, hdr.length);
+  }catch(e){}
+
+  return {moved: rows.length, deleted: take};
+}
+
+/* ===================== Apurit ===================== */
+
+// Löydä header + tracking-sarakkeen indeksi
+function _pstg_getHeaderAndTrackingIndex_(sheet){
+  const lastCol = sheet.getLastColumn();
+  const hdr = lastCol ? sheet.getRange(1,1,1,lastCol).getValues()[0].map(v=>String(v||'').trim()) : [];
+  const H = PSTG__hdrMap(hdr).indexOf;
+  const iTrack = H(['tracking','trackingnumber','tracking no','seuranta','code','koodi','viite',
+                    'reference','parcelno','parcel number','package number','packagenumber',
+                    'consignment no','consignment']);
+  return { hdr, iTrack };
+}
+
+// Kapasiteetti varmistus (rivit/sarakkeet)
+function _pstg_ensureCapacity_(sheet, needRows, needCols){
+  if (sheet.getMaxRows() < needRows){
+    sheet.insertRowsAfter(sheet.getMaxRows(), needRows - sheet.getMaxRows());
+  }
+  if (sheet.getMaxColumns() < needCols){
+    sheet.insertColumnsAfter(sheet.getMaxColumns(), needCols - sheet.getMaxColumns());
+  }
+}
+
+// Chunkattu setValues – varma kirjoitus isoille massoille
+function _pstg_writeRowsChunked_(sheet, startRow, startCol, rows, totalCols, chunkSize){
+  chunkSize = Math.max(1, parseInt(chunkSize||1000,10));
+  _pstg_ensureCapacity_(sheet, startRow - 1 + rows.length, startCol - 1 + totalCols);
+  for (let i=0;i<rows.length;i+=chunkSize){
+    const chunk = rows.slice(i, i+chunkSize);
+    // paddaa varmuudeksi
+    for (let r=0;r<chunk.length;r++){
+      while (chunk[r].length < totalCols) chunk[r].push('');
+    }
+    const r0 = startRow + i;
+    _pstg_ensureCapacity_(sheet, r0 - 1 + chunk.length, startCol - 1 + totalCols);
+    // retry 1x
+    let ok=false, err=null;
+    for (let a=0;a<2 && !ok;a++){
+      try{
+        sheet.getRange(r0, startCol, chunk.length, totalCols).setValues(chunk);
+        ok=true;
+      }catch(e){
+        err=e; Utilities.sleep(200);
+      }
+    }
+    if (!ok) throw err || new Error('write chunk failed at row '+r0);
+    if ((i/chunkSize)%5===4){ Utilities.sleep(100); try{SpreadsheetApp.flush();}catch(e){} }
+  }
+}
+
+/* ======= safe-define helperit ======= */
+var PSTG__hdrMap = (typeof PSTG__hdrMap === 'function') ? PSTG__hdrMap : function(headers){
+  var norm = function(s){ return String(s||'').toLowerCase().replace(/\s+/g,'').replace(/[._\-–—/()]+/g,''); };
+  var by = {}; for (var i=0;i<headers.length;i++) by[norm(headers[i])] = i;
+  function indexOf(keys){
+    for (var j=0;j<keys.length;j++){ var n = norm(keys[j]); if (n in by) return by[n]; }
+    for (var k=0;k<keys.length;k++){
+      var needle = norm(keys[k]);
+      for (var h in by){ if (h.indexOf(needle)!==-1) return by[h]; }
+    }
+    return -1;
+  }
+  return { indexOf:indexOf };
+};
+
+var PSTG__normTracking = (typeof PSTG__normTracking === 'function') ? PSTG__normTracking : function(v){
+  if (v == null) return '';
+  var s = String(v).trim().replace(/\u00A0/g,' ');
+  s = s.replace(/[\s.\-]/g,'');
+  var m = s.match(/^(\d+)[,\.]\d+$/);
+  if (m) s = m[1];
+  return s.toUpperCase().replace(/[^A-Z0-9]/g,'');
+};
+
+var PSTG__ui = (typeof PSTG__ui === 'function') ? PSTG__ui : function(msg){
+  try { SpreadsheetApp.getUi().alert(String(msg)); } catch(e){ Logger.log('[PSTG] '+msg); }
+};
+/** 12b_scheduler.gs — ketjutettu ajastin: 1000 kpl batch, uusi ajo ~6 min välein
+ *  Käyttää: PSTG_precheck_MoveBatch()  // siirtää yhden siivun stagingista precheckediin
+ *  Start/Stop/Status valikkoon; estää päällekkäiset ajot LockServicellä.
+ */
+
+const PSTG_SCHED_ACTIVE_PROP   = 'PSTG_SCHED_ACTIVE';
+const PSTG_SCHED_DELAY_MS_PROP = 'PSTG_SCHED_DELAY_MS';
+
+/** Lisää valikkonapit (kutsu onOpenissa) */
+function PSTG_scheduler_AddMenu(){
+  try{
+    SpreadsheetApp.getUi()
+      .createMenu('Massahaku (ajastin)')
+      .addItem('Käynnistä (1000 / ~6 min)', 'PSTG_scheduler_Start6m')
+      .addItem('Pysäytä',                   'PSTG_scheduler_Stop')
+      .addItem('Tila',                      'PSTG_scheduler_Status')
+      .addToUi();
+  }catch(e){ Logger.log('UI ei käytettävissä: '+e); }
+}
+
+/** Käynnistä: batch=1000, uusi ajo ~6 min välein, kunnes valmis */
+function PSTG_scheduler_Start6m(){
+  const P = PropertiesService.getScriptProperties();
+  P.setProperty(PSTG_SCHED_ACTIVE_PROP, 'true');
+  P.setProperty(PSTG_SCHED_DELAY_MS_PROP, String(6*60*1000));
+  P.setProperty('PSTG_MOVE_BATCH_ROWS', '1000'); // varmistetaan eräkoko
+  PSTG_scheduler_DeleteOwnTriggers_();           // siivotaan vanhat ketjuttajat
+  PSTG_scheduler_RunOnce();                      // heti ensimmäinen ajo
+  PSTG__ui('Ajastettu massahaku käynnistetty: batch=1000, väli ≈6 min.');
+}
+
+/** Pysäytä ajastin ja poista ketjutetut triggerit */
+function PSTG_scheduler_Stop(){
+  const P = PropertiesService.getScriptProperties();
+  P.deleteProperty(PSTG_SCHED_ACTIVE_PROP);
+  PSTG_scheduler_DeleteOwnTriggers_();
+  PSTG__ui('Ajastettu massahaku pysäytetty.');
+}
+
+/** Näytä tila (montako riviä jäljellä, onko aktiivinen, mikä eräkoko) */
+function PSTG_scheduler_Status(){
+  const P = PropertiesService.getScriptProperties();
+  const ss = SpreadsheetApp.getActive();
+  const stg = ss.getSheetByName('PBI_Outbound_Staging');
+  const pre = ss.getSheetByName('PBI_Outbound_Prechecked');
+
+  const left = stg ? Math.max(0, stg.getLastRow()-1) : 0;
+  const done = pre ? Math.max(0, pre.getLastRow()-1) : 0;
+  const active = String(P.getProperty(PSTG_SCHED_ACTIVE_PROP)||'').toLowerCase()==='true';
+  const batch  = P.getProperty('PSTG_MOVE_BATCH_ROWS') || '1000';
+  const delay  = Math.floor((parseInt(P.getProperty(PSTG_SCHED_DELAY_MS_PROP)||'360000',10))/60000);
+
+  PSTG__ui(`Ajastin: ${active?'AKTIIVINEN':'pois päältä'}\nStaging jäljellä: ${left}\nPrechecked: ${done}\nBatch: ${batch}\nVäli: ~${delay} min`);
+}
+
+/** Yksi ajokerta: aja siivu ja ketjuta seuraava, jos vielä tekemistä ja ajastin on päällä */
+function PSTG_scheduler_RunOnce(){
+  const P = PropertiesService.getScriptProperties();
+  const active = String(P.getProperty(PSTG_SCHED_ACTIVE_PROP)||'').toLowerCase()==='true';
+  const delayMs = Math.max(60000, parseInt(P.getProperty(PSTG_SCHED_DELAY_MS_PROP)||String(6*60*1000),10));
+
+  // Estetään päällekkäinen ajo
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(1)){ return; }
+
+  let moved = 0;
+  try{
+    if (!P.getProperty('PSTG_MOVE_BATCH_ROWS')) P.setProperty('PSTG_MOVE_BATCH_ROWS','1000');
+    const res = PSTG_precheck_MoveBatch(); // { moved, deleted }
+    moved = (res && res.moved) ? res.moved : 0;
+  } catch (e){
+    Logger.log('Scheduler run error: '+e);
+  } finally {
+    try{ lock.releaseLock(); }catch(_){}
+  }
+
+  // Jos aktiivinen ja vielä siirrettävää, varaa seuraava ajo ~delayMs kuluttua
+  if (active && moved > 0){
+    ScriptApp.newTrigger('PSTG_scheduler_RunOnce').timeBased().after(delayMs).create();
+  } else if (active && moved === 0){
+    // Valmis → sammutetaan siististi
+    P.deleteProperty(PSTG_SCHED_ACTIVE_PROP);
+    PSTG_scheduler_DeleteOwnTriggers_();
+    PSTG__ui('Ajastettu massahaku: valmis — ei lisää rivejä.');
+  }
+}
+
+/** Poista kaikki tämän ketjun triggerit */
+function PSTG_scheduler_DeleteOwnTriggers_(){
+  ScriptApp.getProjectTriggers().forEach(t=>{
+    try{
+      if (t.getHandlerFunction && t.getHandlerFunction() === 'PSTG_scheduler_RunOnce'){
+        ScriptApp.deleteTrigger(t);
+      }
+    }catch(e){}
+  });
+}
+function PSTG_scheduler_Start3m(){
+  const P = PropertiesService.getScriptProperties();
+  P.setProperty(PSTG_SCHED_ACTIVE_PROP, 'true');
+  P.setProperty(PSTG_SCHED_DELAY_MS_PROP, String(3*60*1000)); // 3 min
+  P.setProperty('PSTG_MOVE_BATCH_ROWS', '1000');               // batch 1000
+  PSTG_scheduler_DeleteOwnTriggers_();                         // siivoa vanhat
+  PSTG_scheduler_RunOnce();                                    // heti eka ajo
+  PSTG__ui('Ajastettu massahaku käynnistetty: batch=1000, väli ≈3 min.');
+}
+

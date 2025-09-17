@@ -1,0 +1,171 @@
+/** 11_pbi_carrier_guess.gs — Carrier-arvaus Power BI -stagingiin seurantakoodin perusteella
+ *  - pbiGuessCarriersForStaging(): käy läpi PBI_Outbound_Staging (tai Packages/Archive fallback)
+ *  - Luo/ylikirjoittaa sarakkeet:
+ *      • Tracking_Normalized
+ *      • Carrier_Guess
+ *    ja (valinn.) täyttää tyhjän Carrierin arvauksella.
+ *
+ *  Heuristiikat (ensin tarkimmat):
+ *   POSTI:  ^[A-Z]{2}\d{9}FI$   (UPU S10 Suomi),  ^JJFI\d{8,}$
+ *   BRING:  ^37\d{15,}$         (Bring/Posten pitkät 37… numerot)
+ *   DHL:    ^\d{10}$            (DHL Express AWB 10d)
+ *           ^0034\d{12,}$       (DHL Paket EU pitkiä 0034…)
+ *           ^JD\d{14,}$         (DHL eCommerce "JD…")
+ *   GLS:    ^JVGL\d{6,}$        (GLS-viite), lisäksi 11–12d fallback matalalla luottamuksella
+ *   MH:     muut 12–14d fallback matalalla luottamuksella
+ *   Kaukokiito: ei varmaa kaavaa → jätetään Unknown, ellei haluta lisätä omia sääntöjä
+ */
+
+function pbiGuessCarriersForStaging(opts){
+  opts = opts || {};
+  const fillEmptyCarrier = (opts.fillEmptyCarrier === false) ? false : true; // oletus: täytetään tyhjä Carrier
+
+  const ss = SpreadsheetApp.getActive();
+  const sh = ss.getSheetByName('PBI_Outbound_Staging')
+        || ss.getSheetByName('Packages')
+        || ss.getSheetByName('Packages_Archive');
+  if (!sh){
+    _pbiCG_uiAlert_('Lähdetaulua ei löytynyt (PBI_Outbound_Staging / Packages / Packages_Archive).');
+    return;
+  }
+
+  const rng = sh.getDataRange();
+  const vals = rng.getValues();
+  if (!vals || vals.length < 2){
+    _pbiCG_uiAlert_('Ei dataa: ' + sh.getName());
+    return;
+  }
+
+  // Headerit ja indeksit
+  const header = vals[0].map(v => String(v||'').trim());
+  const H = _pbiCG_headerIndexMap_(header);
+
+  const iTracking = H.indexOf(['tracking','trackingnumber','tracking no','seuranta','code','koodi','viite','reference','parcelno','parcel number','package number','packagenumber','consignment no','consignment']);
+  if (iTracking < 0){
+    _pbiCG_uiAlert_('Seurantakoodin saraketta ei löytynyt (yritettiin mm. Tracking / Code / Reference / ParcelNo).');
+    return;
+  }
+  const iCarrier  = H.indexOf(['carrier','kuljetusliike','kuljettaja','carrier name']);
+  // Luo/hae tuotantokolumnit
+  const nameTrackNorm = 'Tracking_Normalized';
+  const nameGuess     = 'Carrier_Guess';
+
+  // varmista että sarakkeet ovat olemassa (lisätään loppuun jos puuttuu)
+  let iTrackNorm = header.indexOf(nameTrackNorm);
+  if (iTrackNorm === -1){ header.push(nameTrackNorm); iTrackNorm = header.length-1; }
+  let iGuess = header.indexOf(nameGuess);
+  if (iGuess === -1){ header.push(nameGuess); iGuess = header.length-1; }
+
+  // jos header piteni, kirjoita uusi header
+  if (header.length > vals[0].length){
+    sh.getRange(1,1,1,header.length).setValues([header]);
+  }
+
+  // Prosessoi rivit
+  const out = []; // varapuskuri
+  let changed = 0;
+
+  for (let r=1; r<vals.length; r++){
+    const row = vals[r];
+    // laajenna rivi jos header kasvoi
+    while (row.length < header.length) row.push('');
+
+    const raw = row[iTracking];
+    const norm = _pbiCG_normalizeTracking_(raw);
+    row[iTrackNorm] = norm;
+
+    const guess = _pbiCG_detectCarrier_(norm);
+    row[iGuess] = guess.carrier;
+
+    if (fillEmptyCarrier && iCarrier >= 0){
+      const existing = String(row[iCarrier] == null ? '' : row[iCarrier]).trim();
+      if (!existing && guess.carrier && guess.carrier !== 'Unknown'){
+        row[iCarrier] = guess.carrier;
+      }
+    }
+    out.push(row);
+    if (norm || guess.carrier) changed++;
+  }
+
+  // Kirjoita takaisin (vain datarivit)
+  sh.getRange(2,1,out.length, header.length).setValues(out);
+
+  // Muotoilua (teksti)
+  try{
+    sh.getRange(2, iTrackNorm+1, out.length, 1).setNumberFormat('@');
+    sh.getRange(2, iGuess+1, out.length, 1).setNumberFormat('@');
+    if (iCarrier >= 0) sh.getRange(2, iCarrier+1, out.length, 1).setNumberFormat('@');
+    sh.getRange(1,1,1,header.length).setFontWeight('bold').setBackground('#f6f8fa');
+    sh.autoResizeColumns(1, header.length);
+  }catch(e){}
+
+  _pbiCG_uiAlert_('Carrier-arvaus valmis: ' + changed + ' riviä käsitelty. (Taulu: ' + sh.getName() + ')');
+}
+
+/** —————— Heuristiikat —————— */
+function _pbiCG_detectCarrier_(norm){
+  const s = String(norm||'').toUpperCase();
+  if (!s) return {carrier:'', confidence:0, rule:''};
+
+  // POSTI
+  if (/^[A-Z]{2}\d{9}FI$/.test(s)) return {carrier:'Posti', confidence:1.0, rule:'S10-FI'};
+  if (/^JJFI\d{8,}$/.test(s))      return {carrier:'Posti', confidence:0.9, rule:'JJFI+'};
+
+  // BRING / POSTEN
+  if (/^37\d{15,}$/.test(s))       return {carrier:'Bring', confidence:0.9, rule:'37… long'};
+
+  // DHL
+  if (/^\d{10}$/.test(s))          return {carrier:'DHL',   confidence:0.8, rule:'10d_AWB'};
+  if (/^0034\d{12,}$/.test(s))     return {carrier:'DHL',   confidence:0.8, rule:'0034…'};
+  if (/^JD\d{14,}$/.test(s))       return {carrier:'DHL',   confidence:0.7, rule:'JD…'};
+
+  // GLS
+  if (/^JVGL\d{6,}$/.test(s))      return {carrier:'GLS',   confidence:0.85, rule:'JVGL…'};
+  if (/^\d{11,12}$/.test(s))       return {carrier:'GLS',   confidence:0.5, rule:'11–12d_fallback'};
+
+  // MATKAHUOLTO (heikko fallback: 12–14 numeroinen)
+  if (/^\d{12,14}$/.test(s))       return {carrier:'Matkahuolto', confidence:0.4, rule:'12–14d_fallback'};
+
+  // KAUKOKIITO: ei hyvää yksiselitteistä kaavaa → jätetään Unknown
+  return {carrier:'Unknown', confidence:0.0, rule:'none'};
+}
+
+/** Normaloi seurantakoodi:
+ *  - poistaa NBSP/whitespace/viivat/pisteet
+ *  - jos näyttää numerolta desimaalilla (… ,00), pudottaa desimaalin
+ *  - jättää vain [A-Z0-9]
+ */
+function _pbiCG_normalizeTracking_(v){
+  if (v == null) return '';
+  let s = String(v).trim().replace(/\u00A0/g, ' ');
+  // poista välilyönnit ja erottimet
+  s = s.replace(/[\s.\-]/g, '');
+  // jos on jotain tyyliin 903289802954,00 → tiputa desimaaliosa
+  const m = s.match(/^(\d+)[,\.]\d+$/);
+  if (m) s = m[1];
+  // jätä vain A-Z0-9
+  s = s.toUpperCase().replace(/[^A-Z0-9]/g,'');
+  return s;
+}
+
+/** Header-haku (täsmä + löysä) */
+function _pbiCG_headerIndexMap_(headers){
+  const norm = s => String(s||'').toLowerCase().replace(/\s+/g,'').replace(/[._\-–—/()]+/g,'');
+  const indexBy = {};
+  headers.forEach((h,i)=> indexBy[norm(h)] = i);
+  function indexOf(keys){
+    for (let i=0;i<keys.length;i++){ const n = norm(keys[i]); if (n in indexBy) return indexBy[n]; }
+    for (let j=0;j<keys.length;j++){
+      const needle = norm(keys[j]);
+      for (const k in indexBy){ if (k.indexOf(needle) !== -1) return indexBy[k]; }
+    }
+    return -1;
+  }
+  return { indexOf };
+}
+
+/** UI-viesti headless-turvallisesti */
+function _pbiCG_uiAlert_(msg){
+  try { SpreadsheetApp.getUi().alert(String(msg)); }
+  catch(e){ Logger.log('[CarrierGuess] ' + msg); }
+}

@@ -1,0 +1,76 @@
+
+/** 08_delivery_reports.gs — delivery time analytics **/
+
+function makeDeliveryTimeReport(){
+  const ss = SpreadsheetApp.getActive();
+  const sh = ss.getSheetByName(TARGET_SHEET);
+  if (!sh){ SpreadsheetApp.getUi().alert('Puuttuu '+TARGET_SHEET); return; }
+  const data = sh.getDataRange().getValues();
+  if (data.length<2){ SpreadsheetApp.getUi().alert('Ei dataa.'); return; }
+  const map = headerIndexMap_(data[0]);
+  const idxSub = colIndexOf_(map, ['Submitted date','Submitted','B']); // gmail report
+  const idxPickup = colIndexOf_(map, ['Pick up date','Pick up']);      // gmail report
+  const idxCreated = colIndexOf_(map, ['Created Date','Created']);     // powerbi
+  const idxCarrier = colIndexOf_(map, ['Carrier']);
+  const idxCountry = colIndexOf_(map, ['Country','Dest Country','Destination Country']);
+  const idxStatus = colIndexOf_(map, ['RefreshStatus','Status']);
+  const idxDeliveredTime = colIndexOf_(map, ['Delivered Time','Delivered At','Delivered']); // computed from tracking
+  const rows = [['Carrier','DestCountry','Submitted','Pickup','Created','Delivered','LeadTime(days)','Source']];
+
+  for (let r=1;r<data.length;r++){
+    const carrier = data[r][idxCarrier]||'';
+    const dest = data[r][idxCountry]||'';
+    const submitted = data[r][idxSub]||'';
+    const pickup = data[r][idxPickup]||'';
+    const created = data[r][idxCreated]||'';
+    const delivered = data[r][idxDeliveredTime] || data[r][map['RefreshTime']] || '';
+    const src = submitted || pickup ? 'Gmail' : (created ? 'PowerBI' : '');
+    let start = pickup || submitted || created;
+    let lt = '';
+    if (start && delivered){
+      const a = new Date(start).getTime(), b = new Date(delivered).getTime();
+      if (isFinite(a) && isFinite(b) && b>a) lt = ((b-a)/86400000).toFixed(2);
+    }
+    rows.push([carrier, dest, submitted, pickup, created, delivered, lt, src]);
+  }
+  const rep = ss.getSheetByName('Delivery_Times') || ss.insertSheet('Delivery_Times');
+  rep.clear(); rep.getRange(1,1,rows.length, rows[0].length).setValues(rows);
+  SpreadsheetApp.getUi().alert('Toimitusaikaraportti valmis: Delivery_Times');
+}
+
+function makeCountryWeekLeadtimeReport(){
+  // Very light pivot: week(country, carrier): average leadtime from Delivery_Times
+  const ss = SpreadsheetApp.getActive();
+  const sh = ss.getSheetByName('Delivery_Times');
+  if (!sh){ SpreadsheetApp.getUi().alert('Aja ensin "Toimitusajat – listaus".'); return; }
+  const data = sh.getDataRange().getValues();
+  if (data.length<2){ SpreadsheetApp.getUi().alert('Delivery_Times on tyhjä.'); return; }
+  const hdr = data[0];
+  const idxCarr = hdr.indexOf('Carrier');
+  const idxDest = hdr.indexOf('DestCountry');
+  const idxDel = hdr.indexOf('Delivered');
+  const idxLT = hdr.indexOf('LeadTime(days)');
+  const map = {};
+  for (let r=1;r<data.length;r++){
+    const carr = String(data[r][idxCarr]||'').trim();
+    const dest = String(data[r][idxDest]||'').trim();
+    const del = data[r][idxDel];
+    const lt = parseFloat(data[r][idxLT]);
+    if (!carr || !dest || !del || !isFinite(lt)) continue;
+    const d = new Date(del);
+    const y = d.getFullYear();
+    const w = Utilities.formatDate(d, Session.getScriptTimeZone(), "YYYY-'W'ww");
+    const key = [y,w,dest,carr].join('|');
+    map[key] = map[key] || {sum:0, n:0};
+    map[key].sum += lt; map[key].n += 1;
+  }
+  const rows = [['Year','ISOWeek','Country','Carrier','AvgLeadTime(days)','Count']];
+  Object.keys(map).sort().forEach(k=>{
+    const [y,w,country,carrier] = k.split('|');
+    const o = map[k];
+    rows.push([y,w,country,carrier,(o.sum/o.n).toFixed(2),o.n]);
+  });
+  const rep = ss.getSheetByName('Leadtime_Weekly_Country') || ss.insertSheet('Leadtime_Weekly_Country');
+  rep.clear(); rep.getRange(1,1,rows.length, rows[0].length).setValues(rows);
+  SpreadsheetApp.getUi().alert('Viikkoraportti valmis: Leadtime_Weekly_Country');
+}

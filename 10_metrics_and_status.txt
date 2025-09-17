@@ -1,0 +1,5 @@
+if (typeof PBI_PROP_MD5KEY === 'undefined')   var PBI_PROP_MD5KEY   = 'PBI_FILE_MD5_SET_JSON';
+if (typeof PBI_STAGING_SHEET === 'undefined') var PBI_STAGING_SHEET = 'PBI_Outbound_Staging';
+if (typeof PBI_PROCESSED_DIR === 'undefined') var PBI_PROCESSED_DIR = 'Processed';
+if (typeof PBI_DUPLICATES_DIR === 'undefined')var PBI_DUPLICATES_DIR= 'Duplicates';
+if (typeof PBI_ERRORS_DIR === 'undefined')    var PBI_ERRORS_DIR    = 'Errors';

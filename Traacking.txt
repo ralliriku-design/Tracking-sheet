@@ -1,0 +1,3363 @@
+/******************************************************
+ * Shipment Tracking Toolkit – FULL SCRIPT (copy–paste)
+ * Google Apps Script (Spreadsheet)
+ * ----------------------------------------------------
+ * Sisältää:
+ *  - Gmail-raportin tuonti → Packages & Packages_Archive
+ *  - Vaatii_toimenpiteitä -rakennus ja päivitys
+ *  - Seurantahaut: Posti, GLS (uusi FI v2 + fallback OAuth), DHL, Bring, Matkahuolto
+ *  - Bulk-ajo dynaamisella throttlingilla + välimuisti + backoff
+ *  - Viikkoraportit (SUN→SUN), PBI-tuonti ja arkistointi
+ *  - Arkistoi "Vaatii_toimenpiteitä" -toimitetut → Packages_Archive
+ *  - Pop-in Asetuspaneeli (modal dialog) avaimille & rajoille + pikatoiminnot
+ *
+ * HUOM: Drive advanced service (Drive API) vaaditaan .xlsx → Sheets -tuontiin:
+ *  - Apps Script → Services → lisää "Drive API"
+ ******************************************************/
+
+/********************* CONFIG (sheet names) ************************/
+/*** PRIORITEETIT JA BUDJETIT PER AJO ***/
+const PRIORITY_CARRIERS = ['posti','gls']; // ajetaan “kaasu pohjassa”
+const EXTRA_PRIORITY_CALLS = 150;          // lisäkutsut per ajo, kun prioriteetteja jo tehty
+
+function canonicalCarrier_(s){
+  const c = String(s||'').toLowerCase();
+  if (/posti/.test(c)) return 'posti';
+  if (/gls/.test(c)) return 'gls';
+  if (/dhl/.test(c)) return 'dhl';
+  if (/bring/.test(c)) return 'bring';
+  if (/matkahuolto|mh/.test(c)) return 'matkahuolto';
+  return 'other';
+}
+
+const TARGET_SHEET        = 'Packages';
+const ARCHIVE_SHEET       = 'Packages_Archive';
+const ACTION_SHEET        = 'Vaatii_toimenpiteitä';
+const REPORT_SOK_SHEET    = 'Report_SOK';
+const REPORT_KRK_SHEET    = 'Report_Karkkainen';
+const DELIVERY_LIST_SHEET = 'Delivery_Time';
+const COUNTRY_WEEK_SHEET  = 'Leadtime_ByCountry_Week';
+const RUN_LOG_SHEET       = 'Run_All_Log';
+const PBI_IMPORT_SHEET    = 'PowerBI_Import';
+const PBI_NEW_SHEET       = 'PowerBI_New';
+
+/*** Delivered/Toimitettu -avainsanat (flagin tulkintaan) ***/
+const DELIVERED_KEYWORDS = [
+  'delivered','toimitettu','luovutettu','delivered to pickup point',
+  'delivered to parcel locker','delivered to recipient','delivered - picked up'
+];
+
+/*** Taulukon siistintä: käytössä monessa kohdassa ***/
+function sanitizeMatrix_(values){
+  if (!values || !values.length) return [];
+  const m = values.map(r => r.map(v => (v === null || v === undefined) ? '' : v));
+
+  // Poista BOM & trimmaa otsikot
+  if (typeof m[0][0] === 'string') m[0][0] = m[0][0].replace(/^\uFEFF/, '');
+  m[0] = m[0].map(h => String(h||'').trim());
+
+  // Leikkaa perästä täysin tyhjät sarakkeet
+  let lastCol = m[0].length - 1;
+  while (lastCol > 0 && m.every(row => String(row[lastCol]||'').trim() === '')) lastCol--;
+  m.forEach(row => row.splice(lastCol+1));
+
+  return m;
+}
+
+/*** Arkistoduplikaattien kevyt tarkistin (käytetään runDailyFlowOnce:ssa) ***/
+function checkArchiveDuplicates(){
+  const ss  = SpreadsheetApp.getActive();
+  const shA = ss.getSheetByName(ARCHIVE_SHEET);
+  if (!shA || shA.getLastRow() < 2) return;
+
+  const data = shA.getDataRange().getDisplayValues();
+  const hdr  = data[0].map(String);
+  const keyI = chooseKeyIndex_(hdr);
+  if (keyI < 0) return;
+
+  const seen = new Map();
+  const dups = [];
+  for (let r = 1; r < data.length; r++){
+    const k = String(data[r][keyI]||'').trim();
+    if (!k) continue;
+    if (seen.has(k)) dups.push([k, r+1, seen.get(k)]);
+    else seen.set(k, r+1);
+  }
+
+  // Kirjaa nopea yhteenveto RUN_LOG_SHEET:iin
+  const log = ss.getSheetByName(RUN_LOG_SHEET) || ss.insertSheet(RUN_LOG_SHEET);
+  if (log.getLastRow() === 0){
+    log.getRange(1,1,1,5).setValues([['Step','Status','Message','Rows/Info','Duration (s)']]);
+  }
+  log.insertRowsAfter(1, 1);
+  log.getRange(2,1,1,5).setValues([[
+    'Archive duplicate check', 'OK',
+    dups.length ? 'DUPLICATES FOUND' : 'None',
+    `dups:${dups.length}`, ''
+  ]]);
+
+  // Halutessasi listaa tarkemmat duplikaatit omaan sheetiin
+  if (dups.length){
+    const name = 'Archive_Duplicates';
+    const sh = ss.getSheetByName(name) || ss.insertSheet(name);
+    sh.clear();
+    sh.getRange(1,1,1,3).setValues([['Key','Row','FirstRow']]);
+    sh.getRange(2,1,dups.length,3).setValues(dups);
+  }
+}
+
+
+/********************* SOURCE (Gmail) ******************************/
+const GMAIL_QUERY     = 'label:"Shipment Report" newer_than:60d has:attachment (filename:xlsx OR filename:csv)';
+const GMAIL_QUERY_ALL = 'label:"Shipment Report" has:attachment (filename:xlsx OR filename:csv)';
+
+/********************* KEYS & FIELDS ******************************/
+const FORCE_KEY_NAME = 'Package Number';
+const KEY_CANDIDATES = [
+  ['Package Number','PackageNumber','Package No'],
+  ['Orderid','Order id','Outbound order','Outbound order id'],
+  ['Consignment ID','Consignment number','Shipment ID','Shipment No'],
+  ['Waybill','Waybill No','AWB'],
+  ['Tracking number','Tracking','Barcode']
+];
+const TRACKING_CODE_CANDIDATES = [
+  'Tracking number','Tracking','Barcode','Waybill','Waybill No','AWB',
+  'Package Number','PackageNumber','Shipment ID','Consignment number'
+];
+const CARRIER_CANDIDATES = [
+  'Carrier','Carrier name','Service provider','Forwarder','Transporter','Kuljetusliike','Service family'
+];
+const DATE_FIELDS = [
+  'Submitted date','Created','Created date','Booked time','Booking date',
+  'Dispatch date','Shipped date','Timestamp','Date','Delivered date','Delivery date'
+];
+const ID_FIELDS = [].concat(...KEY_CANDIDATES);
+const DECIMAL_FIELDS = [ 'Weight','Gross weight','kg','KG','Kilo','Volume','m³','cbm','EUR','USD','$','€' ];
+
+/********************* PAYER & STATUS FIELDS ***********************/
+const SOK_FREIGHT_ACCOUNT      = '990719901';  // SOK:n tunnus (esim. rahtitili tms)
+const KARKKAINEN_NUMBERS       = ['615471','802669','7030057'];  // Kärkkäinen-tunnuksia
+const PAYER_CANDIDATES         = [ 'Payer','Freight account','Billing account','Customer number','Customer ID','Customer #' ];
+const PAYER_FALLBACK_COL_LETTER = 'AN';  // esim. 'AN' = fallback-sarake Payerille, jos ei löydy nimellä
+const DELIVERED_FLAG_CANDIDATES = [ 'Status','Delivery status','Current status','State','Tila','Vaihe','Stage' ];
+const DELIVERED_DATE_CANDIDATES = [ 'Delivered date','Delivered','Delivery date','Delivered on','Toimitettu','Luovutettu' ];
+const DELIVERED_FALLBACK_COL_LETTER = 'CI';  // esim. 'CI' = fallback-sarake Delivered-pvm:lle
+const POSTI_IN_CANDIDATES = [ 
+  'Received at Posti','Received by Posti','Handover to Posti','Consignment received',
+  'Item accepted','Manifest created','Manifested','Erä vastaanotettu','Lähetys vastaanotettu'
+];
+const POSTI_IN_FALLBACK_COL_LETTER = 'P';  // fallback-sarake Posti-in (jos esim. P-sarake on erän vastaanotto)
+
+
+
+/********************* MENU (onOpen) *******************************/
+function onOpen(e){
+  const ui = SpreadsheetApp.getUi();
+  ui.createMenu('Shipment')
+    .addItem('Credentials Hub', 'showCredentialsHub')
+    .addItem('Hae Gmail → Päivitä taulut nyt', 'runDailyFlowOnce')
+    .addItem('Rakenna Vaatii_toimenpiteitä (ei-toimitetut)', 'buildPendingFromPackagesAndArchive')
+    .addItem('Päivitä Vaatii_toimenpiteitä status', 'refreshStatuses_Vaatii')
+    .addSeparator()
+    .addItem('Tuo Gmailin uusin "Outbound order" -liite', 'adhocImportLatestOutboundFromGmail')
+    .addItem('Päivitä statukset (Adhoc_Tracking)', 'adhocRefresh')
+    .addSeparator()
+    .addItem('Gmail: tuo KAIKKI (vanhin → uusin)', 'fetchHistoryFromGmailOldToNew')
+    .addItem('Toimitusajat – listaus', 'makeDeliveryTimeReport')
+    .addSeparator()
+    .addSubMenu(
+      ui.createMenu('Päivitä STATUS (valittu carrier)')
+        .addItem('Matkahuolto', 'menuRefreshCarrier_MH')
+        .addItem('Posti', 'menuRefreshCarrier_POSTI')
+        .addItem('GLS', 'menuRefreshCarrier_GLS')
+        .addItem('DHL', 'menuRefreshCarrier_DHL')
+        .addItem('Bring', 'menuRefreshCarrier_BRING')
+        .addItem('Kaikki', 'menuRefreshCarrier_ALL')
+    )
+    .addSubMenu(
+      ui.createMenu('Iso statusajo (turvallinen)')
+        .addItem('Aloita (aktiivinen välilehti)', 'bulkStartForActiveSheet')
+        .addItem('Aloita: Vaatii_toimenpiteitä', 'bulkStart_Vaatii')
+        .addItem('Aloita: Packages', 'bulkStart_Packages')
+        .addItem('Aloita: Packages_Archive', 'bulkStart_Archive')
+        .addItem('Pysäytä', 'bulkStop')
+    )
+    .addSubMenu(
+      ui.createMenu('Adhoc (Power BI / XLSX)')
+        .addItem('Tuo Drive-URL/ID → Adhoc_Tracking', 'adhocImportFromDriveFile')
+        .addItem('Tuo Gmailin uusin "Outbound order" -liite', 'adhocImportLatestOutboundFromGmail')
+        .addItem('Päivitä statukset (Adhoc_Tracking)', 'adhocRefresh')
+    )
+    .addSubMenu(
+      ui.createMenu('Power BI (historia)')
+        .addItem('Tuo Power BI -tiedosto → suodata uudet', 'powerBiImportAndFilter')
+        .addItem('Arkistoi PBI-uudet → Packages_Archive', 'powerBiArchiveNew')
+    )
+    .addSubMenu(
+      ui.createMenu('Tarkistimet')
+        .addItem('Puuttuvat sarakeotsikot (aktiivinen välilehti)', 'showMissingColumns_Active')
+        .addItem('Integraatioavaimet (Script Properties)', 'showMissingProperties')
+    )
+    .addSubMenu(
+      ui.createMenu('Pikatoiminnot / Vaatii')
+        .addItem('Vahvista toimitukset (Vaatii)', 'confirmMissingDeliveredTimes')
+        .addItem('Vahvista + Arkistoi (Vaatii)', 'confirmAndArchiveDelivered')
+        .addItem('Arkistoi toimitetut (Vaatii_toimenpiteitä)', 'archiveDeliveredFromVaatii')
+        .addItem('Aseta valinnaiset oletukset', 'seedOptionalDefaults')
+        .addItem('Täytä API-avaimet & asiakasnumerot', 'seedKnownAccountsAndKeys')
+    )
+    .addSubMenu(
+      ui.createMenu('PBI: SOK/Kärkkäinen')
+        .addItem('Tuo ja jaa SOK & Kärkkäinen', 'pbiImportAndSplitSokKrk')
+    )
+    .addSubMenu(
+      ui.createMenu('Automaatio')
+        .addItem('Ajasta arkiajo 12:00', 'setupWeekday1200_DailyFlow')
+        .addItem('Ajasta viikkoraportti (ma 02:00)', 'setupWeeklyMon0200')
+        .addItem('Poista automaatiot', 'clearAllTriggers')
+    )
+    .addToUi();
+}
+
+/** Pop-in: Asetuspaneeli (Credentials Hub) */
+function showCredentialsHub(){
+  const props = PropertiesService.getScriptProperties().getProperties();
+  const htmlContent = HtmlService.createHtmlOutputFromFile('CredentialsHub')
+    .setWidth(920).setHeight(640).setTitle('Asetuspaneeli');
+  SpreadsheetApp.getUi().showModalDialog(htmlContent, 'Asetuspaneeli');
+}
+
+/********************* GMAIL → PACKAGES/ARCHIVE ********************/
+function readAttachmentToValues_(blob, filename){
+  // Lukee .xlsx tai .csv blobin taulukkomuotoon: palauttaa {values, cleanupId?}
+  const name = String(filename||'').toLowerCase();
+  let values = [];
+  if (name.endsWith('.xlsx')) {
+    // .xlsx → käytetään Drive API:a (edellyttää aktivointia)
+    const file = Drive.Files.insert({mimeType: MimeType.GOOGLE_SHEETS, title: filename}, blob);
+    const tempId = file.id;
+    const tmpSs = SpreadsheetApp.openById(tempId);
+    const sheets = tmpSs.getSheets();
+    if (!sheets.length) throw new Error('Virhe: XLSX-tiedosto on tyhjä.');
+    // oletetaan ensimmäinen sheet
+    const tmpValues = sheets[0].getDataRange().getValues();
+    values = tmpValues.map(r => r.map(v => (v===null||v===undefined) ? '' : v));
+    Drive.Files.remove(tempId);
+    return { values: values, cleanupId: null };
+  } else if (name.endsWith('.csv')) {
+    // CSV: parse line by line
+    const csv = Utilities.parseCsv(blob.getDataAsString());
+    values = csv; 
+  } else {
+    throw new Error('Tuntematon tiedostomuoto: ' + filename);
+  }
+  return { values: values, cleanupId: null };
+}
+function findLatestAttachment_(){
+  const threads = GmailApp.search(GMAIL_QUERY, 0, 50);
+  let best = null;
+  for (const th of threads){
+    for (const msg of th.getMessages().reverse()){
+      const atts = msg.getAttachments({includeInlineImages: false, includeAttachments: true}) || [];
+      for (const a of atts){
+        const n = (a.getName() || '').toLowerCase();
+        if (!(n.endsWith('.xlsx') || n.endsWith('.csv'))) continue;
+        if (!best || msg.getDate() > best.date) {
+          best = { blob: a.copyBlob(), filename: a.getName(), date: msg.getDate() };
+        }
+      }
+    }
+  }
+  return best;
+}
+function fetchAndRebuild(){
+  const att = findLatestAttachment_();
+  if (!att) throw new Error('Ei löytynyt liitteitä labelilla "Shipment Report".');
+  const raw = readAttachmentToValues_(att.blob, att.filename);
+  const values = sanitizeMatrix_(raw.values);
+  rebuildWithArchive_(values);
+  if (raw.cleanupId) {
+    try { DriveApp.getFileById(raw.cleanupId).setTrashed(true); } catch(e){}
+  }
+  SpreadsheetApp.getActive().toast('Raportti haettu ja yhdistetty ✅');
+}
+function fetchHistoryFromGmailOldToNew(){
+  const threads = GmailApp.search(GMAIL_QUERY_ALL, 0, 200);
+  const files = [];
+  for (const th of threads){
+    for (const msg of th.getMessages()){
+      const atts = msg.getAttachments({includeInlineImages: false, includeAttachments: true}) || [];
+      for (const a of atts){
+        const n = (a.getName() || '').toLowerCase();
+        if (n.endsWith('.xlsx') || n.endsWith('.csv')) {
+          files.push({ blob: a.copyBlob(), filename: a.getName(), date: msg.getDate() });
+        }
+      }
+    }
+  }
+  if (!files.length) throw new Error('Gmailista ei löytynyt liitteitä (label:"Shipment Report").');
+  files.sort((a, b) => a.date - b.date); // vanhin → uusin
+
+  const ss = SpreadsheetApp.getActive();
+  const log = ss.getSheetByName(RUN_LOG_SHEET) || ss.insertSheet(RUN_LOG_SHEET);
+
+  const out = [];
+  let processed = 0;
+  for (const f of files){
+    const t0 = new Date();
+    try {
+      const raw = readAttachmentToValues_(f.blob, f.filename);
+      const values = sanitizeMatrix_(raw.values);
+      rebuildWithArchive_(values);
+      if (raw.cleanupId) {
+        try { DriveApp.getFileById(raw.cleanupId).setTrashed(true); } catch(e){}
+      }
+      processed++;
+      out.push([`History ${processed}/${files.length}`, 'OK', f.filename, '', (((new Date()) - t0) / 1000).toFixed(2)]);
+    } catch(e) {
+      out.push([`History ${processed+1}/${files.length}`, 'FAIL', `${f.filename}: ${e.message || e}`, '', (((new Date()) - t0) / 1000).toFixed(2)]);
+    }
+  }
+  log.clear();
+  log.getRange(1,1,1,5).setValues([['Step','Status','Message','Rows/Info','Duration (s)']]);
+  if (out.length) log.getRange(2,1,out.length,5).setValues(out);
+  ss.setActiveSheet(log);
+  ss.toast(`Historia haettu: ${processed}/${files.length} tiedostoa käsitelty`);
+}
+function rebuildWithArchive_(values){
+  if (!values || !values.length) throw new Error('Raportti on tyhjä.');
+  const srcHdr = values[0].map(h => String(h||'').trim());
+  const keyIdx = chooseKeyIndex_(srcHdr);
+  if (keyIdx < 0) throw new Error('Yksilöivää avainsaraketta ei löytynyt.');
+  const keyName = srcHdr[keyIdx];
+  const ss  = SpreadsheetApp.getActive();
+  const sh  = ss.getSheetByName(TARGET_SHEET)  || ss.insertSheet(TARGET_SHEET);
+  const shA = ss.getSheetByName(ARCHIVE_SHEET) || ss.insertSheet(ARCHIVE_SHEET);
+
+  const oldHdr = (sh.getLastRow() ? sh.getRange(1,1,1,sh.getLastColumn()).getValues()[0] : []).map(v => String(v||''));
+  const unionHdr = mergeHeaders_(oldHdr, srcHdr);
+  if (oldHdr.join('|') !== unionHdr.join('|')) {
+    sh.clear();
+    sh.getRange(1,1,1,unionHdr.length).setValues([unionHdr]);
+  }
+  const lastRow = sh.getLastRow(), lastCol = sh.getLastColumn();
+  let dstData = lastRow > 1 ? sh.getRange(2,1,lastRow-1,lastCol).getValues() : [];
+  const dstKeyI = unionHdr.indexOf(keyName);
+  const dstIdx  = new Map();
+  for (let i = 0; i < dstData.length; i++){
+    const k = String(dstData[i][dstKeyI] || '').trim();
+    if (k) dstIdx.set(k, i);
+  }
+  const srcIdxMap = headerIndexMap_(srcHdr);
+  const dstIdxMap = headerIndexMap_(unionHdr);
+  const srcRows   = values.slice(1).filter(r => r.some(x => String(x||'').trim() !== ''));
+  const srcMap    = new Map();
+  for (const r of srcRows){
+    const key = String(r[keyIdx]||'').trim();
+    if (!key) continue;
+    const row = Array(unionHdr.length).fill('');
+    for (const [name, si] of Object.entries(srcIdxMap)){
+      const di = dstIdxMap[name];
+      if (typeof di === 'number') row[di] = r[si];
+    }
+    srcMap.set(key, row);
+  }
+  const now = new Date(), batchId = 'SRPT_'+now.getTime();
+  const toArchive = [];
+  for (const [key, i] of dstIdx.entries()){
+    if (!srcMap.has(key)) {
+      // Ei ole enää tuoreimmassa → arkistoi
+      toArchive.push(dstData[i]);
+      dstData[i] = null;
+    } else {
+      // On tuoreessa → päivitä dataa
+      const upd = srcMap.get(key);
+      const cur = dstData[i] || Array(unionHdr.length).fill('');
+      for (const [name, si] of Object.entries(srcIdxMap)){
+        const di = dstIdxMap[name];
+        cur[di] = upd[di];
+      }
+      dstData[i] = cur;
+      srcMap.delete(key);
+    }
+  }
+  // Arkistoi poistetut rivit (ei ole uusimmassa, eli toimitettu/poistunut)
+  if (toArchive.length) {
+    const archHdr = ensureArchiveHeader_(shA, unionHdr);
+    const payload = toArchive.filter(r => r).map(r => r.concat([now, batchId, 'not in latest file']));
+    shA.insertRowsAfter(1, payload.length);
+    shA.getRange(2,1,payload.length, archHdr.length).setValues(payload);
+  }
+  // Uudet rivit (ei olleet jo ennestään)
+  dstData = dstData.filter(r => r !== null);
+  const newRows = Array.from(srcMap.values());
+  if (newRows.length) {
+    newRows.reverse(); // lisää uudet alkuun
+    sh.insertRowsAfter(1, newRows.length);
+    sh.getRange(2,1,newRows.length, unionHdr.length).setValues(newRows);
+  }
+  // Päivitä olemassa olevat (ja mahdollisesti uudet) rivit
+  if (dstData.length){
+    const start = 2 + newRows.length;
+    if (sh.getMaxRows() < start + dstData.length - 1){
+      sh.insertRowsAfter(sh.getMaxRows(), start + dstData.length - 1 - sh.getMaxRows());
+    }
+    sh.getRange(start,1,dstData.length, unionHdr.length).setValues(dstData);
+    const should = 1 + newRows.length + dstData.length;
+    const extra = sh.getLastRow() - should;
+    if (extra > 0) sh.deleteRows(should+1, extra);
+  }
+  applyFormats_(sh, unionHdr);
+}
+function ensureArchiveHeader_(shA, unionHdr){
+  const want = unionHdr.concat(['ArchivedOn','BatchId','Reason']);
+  const have = (shA.getLastRow() ? shA.getRange(1,1,1,shA.getLastColumn()).getValues()[0] : []).map(v => String(v||''));
+  if (have.join('|') !== want.join('|')) {
+    shA.clear();
+    shA.getRange(1,1,1,want.length).setValues([want]);
+  }
+  return want;
+}
+function applyFormats_(sh, headers){
+  const nrm = headers.map(normalize_);
+  const idCols = headers.map((h,i) => ID_FIELDS.map(normalize_).includes(nrm[i]) ? i+1 : 0).filter(c => c>0);
+  const dateCols = headers.map((h,i) => DATE_FIELDS.map(normalize_).includes(nrm[i]) ? i+1 : 0).filter(c => c>0);
+  const lastRow  = sh.getLastRow();
+  if (lastRow < 2) return;
+  idCols.forEach(c   => sh.getRange(2,c,lastRow-1,1).setNumberFormat('@STRING@'));
+  dateCols.forEach(c => sh.getRange(2,c,lastRow-1,1).setNumberFormat('yyyy-mm-dd hh:mm:ss'));
+}
+
+/********************* PENDING (Vaatii_toimenpiteitä) *************/
+function pickAnyIndex_(headers, candidates){
+  const norm = headers.map(normalize_);
+  for (const name of candidates){
+    const i = norm.indexOf(normalize_(name));
+    if (i >= 0) return i;
+  }
+  return -1;
+}
+function pickDeliveredIndex_(headers){
+  const norm = headers.map(normalize_);
+  for (const n of DELIVERED_DATE_CANDIDATES){
+    const i = norm.indexOf(normalize_(n));
+    if (i >= 0) return i;
+  }
+  if (DELIVERED_FALLBACK_COL_LETTER){
+    const idx1 = colLetterToIndex_(DELIVERED_FALLBACK_COL_LETTER);
+    if (idx1>0 && idx1 <= headers.length) return idx1-1;
+  }
+  return -1;
+}
+function pickPostiInIndex_(headers){
+  const norm = headers.map(normalize_);
+  for (const n of POSTI_IN_CANDIDATES){
+    const i = norm.indexOf(normalize_(n));
+    if (i >= 0) return i;
+  }
+  if (POSTI_IN_FALLBACK_COL_LETTER){
+    const idx1 = colLetterToIndex_(POSTI_IN_FALLBACK_COL_LETTER);
+    if (idx1>0 && idx1 <= headers.length) return idx1-1;
+  }
+  return -1;
+}
+function isDelivered_(row, flagI, dateI){
+  if (dateI >= 0){
+    const v = String(row[dateI]||'').trim();
+    if (v) return true;
+  }
+  if (flagI >= 0){
+    const s = String(row[flagI]||'').toLowerCase();
+    if (DELIVERED_KEYWORDS.some(w => s.includes(w))) return true;
+  }
+  return false;
+}
+function colLetterToIndex_(letter){
+  let s = String(letter||'').toUpperCase().trim();
+  if (!/^[A-Z]+$/.test(s)) return -1;
+  let n = 0;
+  for (let i = 0; i < s.length; i++){
+    n = n*26 + (s.charCodeAt(i) - 64);
+  }
+  return n; // 1-based index
+}
+function collectTables_(){
+  const ss = SpreadsheetApp.getActive();
+  const tables = [];
+  const shP = ss.getSheetByName(TARGET_SHEET);
+  const shA = ss.getSheetByName(ARCHIVE_SHEET);
+  if (shP && shP.getLastRow() > 1){
+    const d = shP.getDataRange().getDisplayValues();
+    tables.push({ hdr: d[0].map(String), rows: d.slice(1) });
+  }
+  if (shA && shA.getLastRow() > 1){
+    const d = shA.getDataRange().getDisplayValues();
+    tables.push({ hdr: d[0].map(String), rows: d.slice(1) });
+  }
+  return tables;
+}
+function getCfgInt_(key){
+  const v = (PropertiesService.getScriptProperties().getProperty(key) || '').trim();
+  const n = parseInt(v, 10);
+  return Number.isFinite(n) ? n : null;
+}
+
+function trkComputeNextAtFromRetryAfter_(retryAfterSeconds){
+  const s = Math.max(1, parseInt(retryAfterSeconds || 0, 10));
+  return new Date(Date.now() + s*1000);
+}
+
+function autoTuneRateLimitOn429_(carrierTag, minMs, maxMs){
+  // Kevyt “tallennetaan signaali” – myöhemmin voi käyttää throttlausta täsmentämään
+  const sp = PropertiesService.getScriptProperties();
+  if (minMs) sp.setProperty(`RATE_MINMS_${carrierTag}`, String(minMs));
+  if (maxMs) sp.setProperty(`RATE_MAXMS_${carrierTag}`, String(maxMs));
+}
+
+function logHttpError_(carrier, codeOrTrack, fnName, url, httpCode, tag, body, retryAfter){
+  try {
+    const ss = SpreadsheetApp.getActive();
+    const sh = ss.getSheetByName(RUN_LOG_SHEET) || ss.insertSheet(RUN_LOG_SHEET);
+    if (sh.getLastRow() === 0){
+      sh.getRange(1,1,1,8).setValues([['Time','Carrier','Fn','HTTP','Tag','Code/Track','Retry-After','Snippet']]);
+    }
+    sh.insertRowsAfter(1,1);
+    sh.getRange(2,1,1,8).setValues([[
+      fmtDateTime_(new Date()), carrier, fnName, httpCode || '', tag || '',
+      String(codeOrTrack || ''), retryAfter || '', String(body||'').slice(0,250)
+    ]]);
+  } catch(e){
+    Logger.log('HTTP error log failed: %s', e && e.message || e);
+  }
+}
+
+function buildPendingFromPackagesAndArchive(){
+  const ss = SpreadsheetApp.getActive();
+  const tables = collectTables_();
+  if (!tables.length) throw new Error('Ei rivejä lähdetauluissa.');
+  let unionHdr = [];
+  tables.forEach(t => unionHdr = mergeHeaders_(unionHdr, t.hdr));
+  const deliveredI     = pickDeliveredIndex_(unionHdr);
+  const deliveredFlagI = pickAnyIndex_(unionHdr, DELIVERED_FLAG_CANDIDATES);
+  const keyI           = chooseKeyIndex_(unionHdr);
+  const dst = [];
+  const seen = new Map();
+  const dstMap = headerIndexMap_(unionHdr);
+  for (const T of tables){
+    const srcMap = headerIndexMap_(T.hdr);
+    for (const r of T.rows){
+      if (!r.some(x => String(x||'').trim() !== '')) continue;
+      const u = new Array(unionHdr.length).fill('');
+      for (const [name, si] of Object.entries(srcMap)){
+        const di = dstMap[name];
+        if (typeof di === 'number') u[di] = r[si];
+      }
+      const key = String(u[keyI]||'').trim();
+      if (!key) continue;
+      const delivered = isDelivered_(u, deliveredFlagI, deliveredI);
+      if (delivered) continue;  // jätä toimitetut pois "Vaatii" -listasta
+      seen.set(key, u);
+    }
+  }
+  const out = Array.from(seen.values());
+  const sh = ss.getSheetByName(ACTION_SHEET) || ss.insertSheet(ACTION_SHEET);
+  sh.clear();
+  const headers = unionHdr.concat([
+    'RefreshCarrier','RefreshStatus','RefreshTime','RefreshLocation','RefreshRaw',
+    'RefreshAt','RefreshAttempts','RefreshNextAt','Delivered date (Confirmed)','Delivered_Source'
+  ]);
+  sh.getRange(1,1,1,headers.length).setValues([headers]);
+  if (out.length) {
+    sh.getRange(2,1,out.length,unionHdr.length).setValues(out);
+  }
+  sh.setFrozenRows(1);
+  sh.autoResizeColumns(1, Math.min(headers.length, 20));
+  ss.toast(`Vaatii_toimenpiteitä päivitetty – ${out.length} riviä`);
+}
+
+/********************* SOK & KÄRKKÄINEN ***************************/
+function normalizeDigits_(v){ return String(v||'').replace(/\D+/g,''); }
+function pickPayerIndex_(headers){
+  const norm = headers.map(normalize_);
+  for (const n of PAYER_CANDIDATES){
+    const i = norm.indexOf(normalize_(n));
+    if (i >= 0) return i;
+  }
+  if (PAYER_FALLBACK_COL_LETTER){
+    const idx1 = colLetterToIndex_(PAYER_FALLBACK_COL_LETTER);
+    if (idx1 > 0 && idx1 <= headers.length) return idx1 - 1;
+  }
+  return -1;
+}
+function ensurePayerIndexForUnion_(tables, unionHdr){
+  let idx = pickPayerIndex_(unionHdr);
+  if (idx >= 0) return idx;
+  if (!tables.length) return -1;
+  return autoDetectPayerIndexByValues_(tables[0].hdr, tables[0].rows);
+}
+function autoDetectPayerIndexByValues_(hdr, rows){
+  // Jos unioniin ei löytynyt Payer-kolumnia, yritä päätellä arvoista:
+  const norm = hdr.map(normalize_);
+  const candI = pickPayerIndex_(hdr);
+  if (candI >= 0) return candI;
+  // Etsi numeroarvolista, joista osa matcheaa SOK tai Kärkkäinen tunnuksiin
+  const score = new Array(hdr.length).fill(0);
+  const sokNorm = normalizeDigits_(SOK_FREIGHT_ACCOUNT);
+  const krkSet  = new Set(KARKKAINEN_NUMBERS.map(normalizeDigits_));
+  for (let c = 0; c < hdr.length; c++){
+    const colDigits = rows.map(r => normalizeDigits_(r[c] || ''));
+    const hits = colDigits.filter(d => d && (d === sokNorm || krkSet.has(d))).length;
+    if (hits > 0) score[c] += hits;
+  }
+  let bestIdx = -1, bestHits = 0;
+  for (let c = 0; c < score.length; c++){
+    if (score[c] > bestHits){
+      bestHits = score[c];
+      bestIdx = c;
+    }
+  }
+  return bestIdx;
+}
+function buildSokKarkkainenAlways(){
+  const ss = SpreadsheetApp.getActive();
+  const tables = collectTables_();
+  if (!tables.length) throw new Error('Ei rivejä lähdetauluissa.');
+  let unionHdr = [];
+  tables.forEach(t => unionHdr = mergeHeaders_(unionHdr, t.hdr));
+  const payerI = ensurePayerIndexForUnion_(tables, unionHdr);
+  const dstMap = headerIndexMap_(unionHdr);
+  const sok = [], krk = [];
+  for (const T of tables){
+    const srcMap = headerIndexMap_(T.hdr);
+    for (const r of T.rows){
+      if (!r.some(x => String(x||'').trim() !== '')) continue;
+      const u = new Array(unionHdr.length).fill('');
+      for (const [name, si] of Object.entries(srcMap)){
+        const di = dstMap[name];
+        if (typeof di === 'number') u[di] = r[si];
+      }
+      const payerDigits = normalizeDigits_(u[payerI] || '');
+      if (!payerDigits) continue;
+      if (payerDigits === normalizeDigits_(SOK_FREIGHT_ACCOUNT)) {
+        sok.push(u);
+      } else if (KARKKAINEN_NUMBERS.some(n => normalizeDigits_(n) === payerDigits)) {
+        krk.push(u);
+      }
+    }
+  }
+  writeFlat_(ss, REPORT_SOK_SHEET, unionHdr, sok);
+  writeFlat_(ss, REPORT_KRK_SHEET, unionHdr, krk);
+  ss.toast(`SOK=${sok.length} | Kärkkäinen=${krk.length}`);
+}
+
+/********************* WEEKLY (SUN→SUN) ***************************/
+function getLastFinishedWeekSunWindow_(){
+  const now = new Date();
+  now.setHours(0,0,0,0);
+  const day = now.getDay(); // 0 = Sunday
+  const thisSunday = new Date(now);
+  thisSunday.setDate(now.getDate() - day);
+  const end   = thisSunday;
+  const start = new Date(end);
+  start.setDate(end.getDate() - 7);
+  return { start, end };
+}
+function writeWeeklySheet_(ss, sheetName, headers, rows, start, end){
+  const sh = ss.getSheetByName(sheetName) || ss.insertSheet(sheetName);
+  sh.clear();
+  sh.getRange(1,1,1,headers.length).setValues([headers]);
+  const infoRow = new Array(headers.length).fill('');
+  infoRow[0] = `Viikko (SUN→SUN): ${dateToYMD_(start)} - ${dateToYMD_(end)}`;
+  if (headers.length > 1) infoRow[1] = `Rivejä: ${rows.length}`;
+  if (headers.length > 2) infoRow[2] = `Luotu: ${fmtDateTime_(new Date())}`;
+  sh.getRange(2,1,1,headers.length).setValues([infoRow]);
+  sh.getRange(2,1,1,Math.min(headers.length, 3)).setFontStyle('italic');
+  if (rows && rows.length){
+    const normalized = rows.map(r => { 
+      const rr = r.slice(0, headers.length);
+      while (rr.length < headers.length) rr.push('');
+      return rr;
+    });
+    sh.getRange(4,1,normalized.length, headers.length).setValues(normalized);
+  }
+  sh.setFrozenRows(3);
+  sh.autoResizeColumns(1, Math.min(headers.length, 20));
+}
+function makeWeeklyReports_SunSun_Only(){
+  const ss  = SpreadsheetApp.getActive();
+  const src = ss.getSheetByName(TARGET_SHEET);
+  if (!src || src.getLastRow() < 2) throw new Error(`"${TARGET_SHEET}" on tyhjä.`);
+  const data = src.getDataRange().getDisplayValues();
+  const hdr  = data[0].map(v => String(v||'').trim());
+  const rows = data.slice(1);
+  const { start, end } = getLastFinishedWeekSunWindow_();
+  const dateI = pickAnyIndex_(hdr, ['Submitted date','Created','Created date','Booking date','Booked time','Dispatch date','Shipped date','Timestamp','Date']);
+  const inWindow = rows.filter(r => {
+    if (dateI < 0) return true;
+    const dt = parseDateFlexible_(r[dateI]);
+    return dt && dt >= start && dt < end;
+  });
+  const payerI = pickPayerIndex_(hdr);
+  const sok = [], krk = [];
+  if (payerI >= 0){
+    const sokD = normalizeDigits_(SOK_FREIGHT_ACCOUNT);
+    const krkSet = new Set(KARKKAINEN_NUMBERS.map(normalizeDigits_));
+    for (const r of inWindow){
+      const d = normalizeDigits_(r[payerI]);
+      if (!d) continue;
+      if (d === sokD) sok.push(r);
+      else if (krkSet.has(d)) krk.push(r);
+    }
+  }
+  writeWeeklySheet_(ss, REPORT_SOK_SHEET, hdr, sok, start, end);
+  writeWeeklySheet_(ss, REPORT_KRK_SHEET, hdr, krk, start, end);
+}
+function makeWeeklyReportsSunSun(){
+  buildSokKarkkainenAlways();
+  makeWeeklyReports_SunSun_Only();
+  refreshStatuses_Sheet(REPORT_SOK_SHEET);
+  refreshStatuses_Sheet(REPORT_KRK_SHEET);
+  SpreadsheetApp.getActive().toast('Viikkoraportit + statukset päivitetty ✅');
+}
+
+/********************* STATUS PÄIVITYKSET *************************/
+
+function ensureRefreshCols_(sh, hdr){
+  const need = [
+    'RefreshCarrier','RefreshStatus','RefreshTime','RefreshLocation','RefreshRaw','RefreshAt',
+    'RefreshAttempts','RefreshNextAt'
+  ];
+  const bonus = ['Delivered date (Confirmed)','Delivered_Source'];
+
+  const have = hdr.slice();
+  [...need, ...bonus].forEach(n => { if (!have.includes(n)) have.push(n); });
+  if (have.length !== hdr.length){
+    const cur = sh.getDataRange().getValues();
+    const rows = cur.length > 1 ? cur.slice(1).map(r => { const rr = r.slice(); while (rr.length < have.length) rr.push(''); return rr; }) : [];
+    sh.clear();
+    sh.getRange(1,1,1,have.length).setValues([have]);
+    if (rows.length) sh.getRange(2,1,rows.length,have.length).setValues(rows);
+  }
+  const idx = {};
+  const map = headerIndexMap_(have);
+  idx.carrier       = map['RefreshCarrier'];
+  idx.status        = map['RefreshStatus'];
+  idx.time          = map['RefreshTime'];
+  idx.location      = map['RefreshLocation'];
+  idx.raw           = map['RefreshRaw'];
+  idx.at            = map['RefreshAt'];
+  idx.attempts      = map['RefreshAttempts'];
+  idx.nextAt        = map['RefreshNextAt'];
+  idx.delivConfirmed = map['Delivered date (Confirmed)'];
+  idx.delivSource    = map['Delivered_Source'];
+  return idx;
+}
+function refreshStatuses_Vaatii(){
+  refreshStatuses_Sheet(ACTION_SHEET, true);
+}
+function refreshStatuses_Sheet(sheetName, removeDelivered = false){
+  const ss = SpreadsheetApp.getActive();
+  const sh = ss.getSheetByName(sheetName);
+  if (!sh || sh.getLastRow() < 2){
+    ss.toast(`${sheetName}: ei rivejä`);
+    return;
+  }
+  const data = sh.getDataRange().getDisplayValues();
+  const origHdr = data[0].map(v => String(v||'').trim());
+  const rows = data.slice(1);
+
+  const idxRef = ensureRefreshCols_(sh, origHdr);
+  const finalHdr = sh.getRange(1,1,1,sh.getLastColumn()).getDisplayValues()[0].map(String);
+
+  const carrierI   = pickAnyIndex_(finalHdr, CARRIER_CANDIDATES);
+  const codeI      = pickAnyIndex_(finalHdr, TRACKING_CODE_CANDIDATES);
+  const deliveredI = pickDeliveredIndex_(finalHdr);
+  if (carrierI < 0 || codeI < 0){
+    ss.toast(`${sheetName}: ei löydy Carrier/Tracking -sarakkeita`);
+    return;
+  }
+  const out = [];
+  const keepRows = [];
+  rows.forEach(r => {
+    // Tee kopio rivistä (ja laajenna Refresh-sarakkeilla)
+    const row = (() => { const rr = r.slice(0, finalHdr.length); while (rr.length < finalHdr.length) rr.push(''); return rr; })();
+    const carrier = String(row[carrierI]||'').trim();
+    const code    = firstCode_(row[codeI]);
+    if (!carrier || !code){
+      row[idxRef.status] = 'SKIP_NO_CODE';
+      row[idxRef.at]     = fmtDateTime_(new Date());
+      out.push(row);
+      keepRows.push(true);
+      return;
+    }
+    const res = TRK_trackByCarrier_(carrier, code);
+    row[idxRef.carrier]  = res.carrier || carrier;
+    row[idxRef.status]   = res.status  || '';
+    row[idxRef.time]     = res.time    || '';
+    row[idxRef.location] = res.location|| '';
+    row[idxRef.raw]      = res.raw     || '';
+    row[idxRef.at]       = fmtDateTime_(new Date());
+    if (res.status === 'RATE_LIMIT_429' && typeof res.retryAfter === 'number'){
+      const nextAt = trkComputeNextAtFromRetryAfter_(res.retryAfter);
+      if (idxRef.nextAt >= 0) row[idxRef.nextAt] = fmtDateTime_(nextAt);
+    }
+    const isDeliveredNow = /delivered|toimitettu|luovutettu/i.test(res.status || '');
+    if (isDeliveredNow && res.time){
+      if (typeof idxRef.delivConfirmed === 'number' && !row[idxRef.delivConfirmed]){
+        row[idxRef.delivConfirmed] = res.time;
+      }
+      if (typeof idxRef.delivSource === 'number'){
+        row[idxRef.delivSource] = 'tracking';
+      }
+    }
+    const deliveredAlready = deliveredI >= 0 && String(row[deliveredI]||'').trim();
+    out.push(row);
+    keepRows.push(!(removeDelivered && (deliveredAlready || isDeliveredNow)));
+  });
+  // Kirjoita päivitetyt rivit takaisin (filtteröiden jos toimitettuja poistetaan)
+  sh.clearContents();
+  sh.getRange(1,1,1,finalHdr.length).setValues([finalHdr]);
+  const filtered = out.filter((_, i) => keepRows[i]).map(r => {
+    const rr = r.slice(0, finalHdr.length);
+    while (rr.length < finalHdr.length) rr.push('');
+    return rr;
+  });
+  if (filtered.length) {
+    sh.getRange(2,1,filtered.length, finalHdr.length).setValues(filtered);
+  }
+  sh.setFrozenRows(1);
+  sh.autoResizeColumns(1, Math.min(finalHdr.length, 20));
+  const removed = out.length - filtered.length;
+  ss.toast(`${sheetName}: status päivitetty (${removed} poistettu koska delivered)`);
+}
+function refreshStatuses_Filtered(sheetName, carriers, removeDelivered = false){
+  const ss = SpreadsheetApp.getActive();
+  const sh = ss.getSheetByName(sheetName);
+  if (!sh || sh.getLastRow() < 2){
+    ss.toast(`${sheetName}: ei rivejä`);
+    return;
+  }
+  const data = sh.getDataRange().getDisplayValues();
+  const origHdr = data[0].map(v => String(v||'').trim());
+  const rows = data.slice(1);
+
+  const idxRef = ensureRefreshCols_(sh, origHdr);
+  const finalHdr = sh.getRange(1,1,1,sh.getLastColumn()).getDisplayValues()[0].map(String);
+
+  const carrierI   = pickAnyIndex_(finalHdr, CARRIER_CANDIDATES);
+  const codeI      = pickAnyIndex_(finalHdr, TRACKING_CODE_CANDIDATES);
+  const deliveredI = pickDeliveredIndex_(finalHdr);
+  if (carrierI < 0 || codeI < 0){
+    ss.toast(`${sheetName}: ei löydy Carrier/Tracking -sarakkeita`);
+    return;
+  }
+  const want = (carriers || []).map(s => String(s||'').toLowerCase());
+  const out = [], keep = [];
+  rows.forEach(r => {
+    const row = (() => { const rr = r.slice(0, finalHdr.length); while (rr.length < finalHdr.length) rr.push(''); return rr; })();
+    const carr = String(row[carrierI]||'').toLowerCase();
+    const code = firstCode_(row[codeI]);
+    if (want.some(w => carr.includes(w))){
+      const res = TRK_trackByCarrier_(carr, code);
+      row[idxRef.carrier]  = res.carrier || row[idxRef.carrier] || '';
+      row[idxRef.status]   = res.status  || '';
+      row[idxRef.time]     = res.time    || '';
+      row[idxRef.location] = res.location|| '';
+      row[idxRef.raw]      = res.raw     || '';
+      row[idxRef.at]       = fmtDateTime_(new Date());
+      const deliveredAlready = deliveredI >= 0 && String(row[deliveredI]||'').trim();
+      const isDeliveredNow = /delivered|toimitettu|luovutettu/i.test(res.status || '');
+      out.push(row);
+      keep.push(!(removeDelivered && (deliveredAlready || isDeliveredNow)));
+    } else {
+      out.push(row);
+      keep.push(true);
+    }
+  });
+  sh.clearContents();
+  sh.getRange(1,1,1,finalHdr.length).setValues([finalHdr]);
+  const filtered = out.filter((_, i) => keep[i]).map(r => {
+    const rr = r.slice(0, finalHdr.length);
+    while (rr.length < finalHdr.length) rr.push('');
+    return rr;
+  });
+  if (filtered.length) {
+    sh.getRange(2,1,filtered.length, finalHdr.length).setValues(filtered);
+  }
+  sh.setFrozenRows(1);
+  sh.autoResizeColumns(1, Math.min(finalHdr.length, 20));
+  ss.toast(`${sheetName}: status päivitetty (suodatus: ${want.join(', ')})`);
+}
+function menuRefreshCarrier_MH(){
+  refreshStatuses_Filtered(getActiveSheetName_(), ['matkahuolto'], false);
+}
+function menuRefreshCarrier_POSTI(){
+  refreshStatuses_Filtered(getActiveSheetName_(), ['posti'], false);
+}
+function menuRefreshCarrier_GLS(){
+  refreshStatuses_Filtered(getActiveSheetName_(), ['gls'], false);
+}
+function menuRefreshCarrier_DHL(){
+  refreshStatuses_Filtered(getActiveSheetName_(), ['dhl'], false);
+}
+function menuRefreshCarrier_BRING(){
+  refreshStatuses_Filtered(getActiveSheetName_(), ['bring'], false);
+}
+function menuRefreshCarrier_ALL(){
+  // 'ALL' – no filter, just refresh all on active sheet
+  const shName = getActiveSheetName_();
+  refreshStatuses_Sheet(shName, false);
+}
+function getActiveSheetName_(){
+  return SpreadsheetApp.getActive().getActiveSheet().getName();
+}
+
+/********************* BULK REFRESH (throttled) *******************/
+const BULK_MAX_API_CALLS_PER_RUN = 20;
+const BULK_TIME_LIMIT_MS = 20 * 1000;  // 20 seconds per trigger run
+const BULK_COOLDOWN_NO_CODE_H = 1;    // 1h delay for SKIP_NO_CODE
+const BULK_BACKOFF_MINUTES_BASE = 5;
+const BULK_BACKOFF_MINUTES_MAX  = 60;
+function bulkStartForActiveSheet(){
+  bulkStart_(SpreadsheetApp.getActiveSheet().getName());
+}
+function bulkStart_Vaatii(){
+  bulkStart_(ACTION_SHEET);
+}
+function bulkStart_Packages(){
+  bulkStart_(TARGET_SHEET);
+}
+function bulkStart_Archive(){
+  bulkStart_(ARCHIVE_SHEET);
+}
+function bulkStop(){
+  // Remove any active bulk triggers and pending jobs
+  ScriptApp.getProjectTriggers().forEach(t => {
+    if (t.getHandlerFunction() === 'bulkWorker_') ScriptApp.deleteTrigger(t);
+  });
+  const sp = PropertiesService.getScriptProperties();
+  Object.keys(sp.getProperties()).filter(k => k.startsWith('BULKJOB|')).forEach(k => sp.deleteProperty(k));
+  SpreadsheetApp.getActive().toast('Bulk-ajo pysäytetty');
+}
+function bulkStart_(sheetName){
+  const sp = PropertiesService.getScriptProperties();
+  const key = 'BULKJOB|' + sheetName;
+  const sh = SpreadsheetApp.getActive().getSheetByName(sheetName);
+  if (!sh || sh.getLastRow() < 2) throw new Error(`${sheetName}: ei rivejä`);
+  const total = Math.max(0, sh.getLastRow() - 1);
+  sp.setProperty(key, JSON.stringify({
+    sheet: sheetName,
+    row: 2,
+    calls: 0,
+    started: Date.now(),
+    total: total,
+    updated: Date.now(),
+    done: 0,
+    left: total
+  }));
+  bulkWorker_();
+  ScriptApp.newTrigger('bulkWorker_').timeBased().everyMinutes(1).create();
+  SpreadsheetApp.getActive().toast(`Bulk-ajo aloitettu: ${sheetName} (rivit: ${total})`);
+}
+function bulkWorker_(){
+  const ss = SpreadsheetApp.getActive();
+  const sp = PropertiesService.getScriptProperties();
+  const jobs = Object.entries(sp.getProperties()).filter(([k]) => k.startsWith('BULKJOB|'));
+  if (!jobs.length) return;
+  const callsByCarrier = { posti:0, gls:0, dhl:0, matkahuolto:0, bring:0, other:0 };
+  let didCalls = 0;
+  for (const [key, val] of jobs){
+    let job = {};
+    try { job = JSON.parse(val || '{}'); } catch(e){}
+    const sh = ss.getSheetByName(job.sheet);
+    if (!sh || sh.getLastRow() < 2){
+      sp.deleteProperty(key);
+      continue;
+    }
+    const tStart = Date.now();
+    const data = sh.getDataRange().getDisplayValues();
+    const hdr  = data[0].map(String);
+    const idxRef = ensureRefreshCols_(sh, hdr);
+    const finalHdr = sh.getRange(1,1,1,sh.getLastColumn()).getDisplayValues()[0].map(String);
+    const carrierI   = pickAnyIndex_(finalHdr, CARRIER_CANDIDATES);
+    const codeI      = pickAnyIndex_(finalHdr, TRACKING_CODE_CANDIDATES);
+    const deliveredI = pickDeliveredIndex_(finalHdr);
+    if (carrierI < 0 || codeI < 0){
+      sp.deleteProperty(key);
+      SpreadsheetApp.getActive().toast(`${job.sheet}: ei Carrier/Tracking -sarakkeita`);
+      continue;
+    }
+    let r = Math.max(2, job.row || 2);
+    let wrote = 0;
+    const baseBackoff = getCfgInt_('BULK_BACKOFF_MINUTES_BASE') || BULK_BACKOFF_MINUTES_BASE;
+    while (r <= data.length && (Date.now() - tStart) < BULK_TIME_LIMIT_MS){
+      const allowedCalls = BULK_MAX_API_CALLS_PER_RUN + Math.min(EXTRA_PRIORITY_CALLS, (callsByCarrier.posti + callsByCarrier.gls));
+      if (didCalls >= allowedCalls) break;
+      const row = (() => { const rr = (data[r-1] || []).slice(0, finalHdr.length); while (rr.length < finalHdr.length) rr.push(''); return rr; })();
+      const nextAt = parseDateFlexible_(row[idxRef.nextAt]);
+      if (nextAt && nextAt instanceof Date && nextAt.getTime() > Date.now()){
+        r++;
+        continue;
+      }
+      const carrier = String(row[carrierI]||'').trim();
+      const codeRaw = firstCode_(row[codeI]);
+      const codeOk  = isCodeLikely_(codeRaw);
+      if (!carrier || !codeRaw){
+        row[idxRef.status]   = 'SKIP_NO_CODE';
+        row[idxRef.at]       = fmtDateTime_(new Date());
+        row[idxRef.nextAt]   = fmtDateTime_(new Date(Date.now() + BULK_COOLDOWN_NO_CODE_H*3600*1000));
+        data[r-1] = row;
+        wrote++;
+        r++;
+        continue;
+      }
+      if (!codeOk){
+        row[idxRef.status] = 'SKIP_INVALID_CODE';
+        row[idxRef.at]     = fmtDateTime_(new Date());
+        data[r-1] = row;
+        wrote++;
+        r++;
+        continue;
+      }
+      const cc = canonicalCarrier_(carrier);
+      let res = null;
+      const cacheKey = trkCacheKey_(carrier, codeRaw);
+      const cached = trkGetCached_(carrier, codeRaw);
+      if (cached){
+        res = cached;
+      } else {
+        didCalls++;
+        if (callsByCarrier.hasOwnProperty(cc)) callsByCarrier[cc]++; else callsByCarrier.other++;
+        res = TRK_trackByCarrier_(carrier, codeRaw);
+        job.calls = (job.calls || 0) + 1;
+        trkSetCached_(carrier, codeRaw, res);
+      }
+      row[idxRef.carrier]  = res.carrier || carrier;
+      row[idxRef.status]   = res.status  || row[idxRef.status] || '';
+      row[idxRef.time]     = res.time    || row[idxRef.time] || '';
+      row[idxRef.location] = res.location|| row[idxRef.location] || '';
+      row[idxRef.raw]      = res.raw     || '';
+      row[idxRef.at]       = fmtDateTime_(new Date());
+      if (res.status === 'RATE_LIMIT_429' && typeof res.retryAfter === 'number'){
+        row[idxRef.attempts] = (parseInt(row[idxRef.attempts]||'0', 10) || 0) + 1;
+        row[idxRef.nextAt]   = fmtDateTime_(trkComputeNextAtFromRetryAfter_(res.retryAfter));
+        data[r-1] = row;
+        wrote++;
+        r++;
+        continue;
+      }
+      const isDeliveredNow = /delivered|toimitettu|luovutettu/i.test(res.status || '');
+      if (isDeliveredNow && res.time){
+        if (typeof idxRef.delivConfirmed === 'number' && !row[idxRef.delivConfirmed]){
+          row[idxRef.delivConfirmed] = res.time;
+        }
+        if (typeof idxRef.delivSource === 'number'){
+          row[idxRef.delivSource] = 'tracking';
+        }
+      }
+      if (!isDeliveredNow && !res.found){
+        const attempts = (parseInt(row[idxRef.attempts]||'0', 10) || 0) + 1;
+        row[idxRef.attempts] = attempts;
+        const mins = Math.min(BULK_BACKOFF_MINUTES_MAX, baseBackoff * Math.pow(2, attempts - 1));
+        row[idxRef.nextAt] = fmtDateTime_(new Date(Date.now() + mins*60*1000));
+      } else {
+        row[idxRef.nextAt] = '';
+      }
+      data[r-1] = row;
+      wrote++;
+      r++;
+    } // while (rows in this sheet for this run)
+    if (wrote){
+      sh.getRange(1,1,1,finalHdr.length).setValues([finalHdr]);
+      sh.getRange(2,1,data.length-1,finalHdr.length).setValues(data.slice(1).map(x => {
+        const rr = x.slice(0, finalHdr.length);
+        while (rr.length < finalHdr.length) rr.push('');
+        return rr;
+      }));
+      sh.setFrozenRows(1);
+    }
+    if (r > data.length){
+      sp.deleteProperty(key);
+      SpreadsheetApp.getActive().toast(`Bulk-ajo valmis: ${job.sheet} (API-kutsuja: ${job.calls || 0})`);
+    } else {
+      job.row    = r;
+      const total = job.total || Math.max(0, data.length - 1);
+      const done  = Math.max(0, r - 2);
+      job.total   = total;
+      job.done    = done;
+      job.left    = Math.max(0, total - done);
+      job.updated = Date.now();
+      sp.setProperty(key, JSON.stringify(job));
+    }
+    if ((Date.now() - tStart) >= BULK_TIME_LIMIT_MS || didCalls >= BULK_MAX_API_CALLS_PER_RUN) break;
+  }
+}
+function trkCacheKey_(carrier, code){
+  const buster = PropertiesService.getScriptProperties().getProperty('TRK_CACHE_BUSTER') || '0';
+  return `TRK|${buster}|${(carrier||'').toLowerCase()}|${code}`;
+}
+function trkGetCached_(carrier, code){
+  try {
+    const cache = CacheService.getScriptCache();
+    const raw = cache.get(trkCacheKey_(carrier, code));
+    return raw ? JSON.parse(raw) : null;
+  } catch(e){
+    return null;
+  }
+}
+function trkSetCached_(carrier, code, res){
+  try {
+    const cache = CacheService.getScriptCache();
+    cache.put(trkCacheKey_(carrier, code), JSON.stringify(res || {}), 6*3600); // cache 6h
+  } catch(e){}
+}
+function trkClearCache(){
+  // Invalidate all cached tracking results by changing the buster
+  PropertiesService.getScriptProperties().setProperty('TRK_CACHE_BUSTER', String(Date.now()));
+}
+
+/********************* ADHOC / PBI *******************************/
+function adhocImportFromDriveFile(){
+  const ui = SpreadsheetApp.getUi();
+  const res = ui.prompt('Adhoc tuonti', 'Liitä Drive-URL tai -ID (.xlsx/.csv).', ui.ButtonSet.OK_CANCEL);
+  if (res.getSelectedButton() !== ui.Button.OK) return;
+  const id = extractId(res.getResponseText());
+  const file = DriveApp.getFileById(id);
+  const raw  = readAttachmentToValues_(file.getBlob(), file.getName());
+  buildAdhocFromValues_(raw.values, file.getName());
+}
+function adhocImportLatestOutboundFromGmail(){
+  const threads = GmailApp.search('has:attachment newer_than:60d "Outbound order" (filename:xlsx OR filename:csv)', 0, 50);
+  let best = null;
+  for (const th of threads){
+    for (const msg of th.getMessages()){
+      const atts = msg.getAttachments({includeInlineImages: false, includeAttachments: true}) || [];
+      for (const a of atts){
+        const n = (a.getName() || '').toLowerCase();
+        if (!(n.endsWith('.xlsx') || n.endsWith('.csv'))) continue;
+        if (!best || msg.getDate() > best.date) {
+          best = { blob: a.copyBlob(), filename: a.getName(), date: msg.getDate() };
+        }
+      }
+    }
+  }
+  if (!best) throw new Error('Gmailista ei löytynyt "Outbound order" -liitteitä.');
+  const raw = readAttachmentToValues_(best.blob, best.filename);
+  buildAdhocFromValues_(raw.values, best.filename);
+}
+function buildAdhocFromValues_(values, label){
+  if (!values || !values.length) throw new Error('Tuotu tiedosto on tyhjä.');
+  const hdr = values[0].map(v => String(v||'').trim());
+  const carrierI = pickAnyIndex_(hdr, CARRIER_CANDIDATES);
+  const codeI    = pickAnyIndex_(hdr, TRACKING_CODE_CANDIDATES);
+  if (carrierI < 0 || codeI < 0) throw new Error('Adhoc: ei löytynyt Carrier/Tracking -sarakkeita.');
+  const rows = values.slice(1).filter(r => r.some(x => String(x||'').trim() !== ''));
+  const out  = rows.map(r => [ r[carrierI], r[codeI] ]);
+  const ss = SpreadsheetApp.getActive();
+  const name = 'Adhoc_Tracking';
+  const sh = ss.getSheetByName(name) || ss.insertSheet(name);
+  sh.clear();
+  const baseHdr = ['Carrier','Tracking number'];
+  const hdrAll = baseHdr.concat(['RefreshCarrier','RefreshStatus','RefreshTime','RefreshLocation','RefreshRaw','RefreshAt']);
+  sh.getRange(1,1,1,hdrAll.length).setValues([hdrAll]);
+  if (out.length) {
+    sh.getRange(2,1,out.length, 2).setValues(out);
+  }
+  sh.setFrozenRows(1);
+  sh.autoResizeColumns(1, Math.min(hdrAll.length, 20));
+  ss.toast(`Adhoc_Tracking: tuotu ${out.length} riviä (${label})`);
+}
+function adhocRefresh(){
+  refreshStatuses_Sheet('Adhoc_Tracking', false);
+}
+
+/********** POWER BI: tuo → suodata uudet → arkistoi **************/
+function powerBiImportAndFilter(){
+  const ui = SpreadsheetApp.getUi();
+  const res = ui.prompt('Power BI tuonti', 'Liitä Drive-URL tai -ID (.xlsx/.csv).', ui.ButtonSet.OK_CANCEL);
+  if (res.getSelectedButton() !== ui.Button.OK) return;
+  const id = extractId(res.getResponseText());
+  const file = DriveApp.getFileById(id);
+  const raw  = readAttachmentToValues_(file.getBlob(), file.getName());
+  const values = sanitizeMatrix_(raw.values);
+  if (!values || !values.length) throw new Error('Tiedosto on tyhjä.');
+
+  const ss = SpreadsheetApp.getActive();
+  const shImp = ss.getSheetByName(PBI_IMPORT_SHEET) || ss.insertSheet(PBI_IMPORT_SHEET);
+  shImp.clear();
+  shImp.getRange(1,1,1,values[0].length).setValues([ values[0] ]);
+  if (values.length > 1) {
+    shImp.getRange(2,1,values.length - 1, values[0].length).setValues(values.slice(1));
+  }
+  shImp.setFrozenRows(1);
+  shImp.autoResizeColumns(1, Math.min(values[0].length, 20));
+
+  const hdr = values[0].map(String);
+  const keyI = chooseKeyIndex_(hdr);
+  if (keyI < 0){
+    showMissingColumnsForHeader_(hdr, 'PowerBI_Import');
+    throw new Error('Avainta (Package Number/Waybill/Tracking...) ei löytynyt – tarkista otsikot.');
+  }
+  const existingKeys = new Set();
+  const addKeysFrom = (sheetName) => {
+    const sh = ss.getSheetByName(sheetName);
+    if (!sh || sh.getLastRow() < 2) return;
+    const d = sh.getDataRange().getDisplayValues();
+    const h = d[0].map(String);
+    const kI = chooseKeyIndex_(h);
+    if (kI < 0) return;
+    for (let r = 1; r < d.length; r++){
+      const k = String(d[r][kI]||'').trim();
+      if (k) existingKeys.add(k);
+    }
+  };
+  addKeysFrom(TARGET_SHEET);
+  addKeysFrom(ARCHIVE_SHEET);
+
+  const body = values.slice(1).filter(r => r.some(x => String(x||'').trim() !== ''));
+  const onlyNew = body.filter(r => !existingKeys.has(String(r[keyI]||'').trim()));
+
+  const shNew = ss.getSheetByName(PBI_NEW_SHEET) || ss.insertSheet(PBI_NEW_SHEET);
+  shNew.clear();
+  shNew.getRange(1,1,1,hdr.length).setValues([ hdr ]);
+  if (onlyNew.length) {
+    shNew.getRange(2,1,onlyNew.length, hdr.length).setValues(onlyNew);
+  }
+  shNew.setFrozenRows(1);
+  shNew.autoResizeColumns(1, Math.min(hdr.length, 20));
+
+  showMissingColumnsForHeader_(hdr, 'PowerBI_Import (info)');
+  SpreadsheetApp.getActive().toast(`Power BI: tuotu ${body.length} riviä, uusia ${onlyNew.length} → ${PBI_NEW_SHEET}`);
+}
+function powerBiArchiveNew(){
+  const ss = SpreadsheetApp.getActive();
+  const shNew = ss.getSheetByName(PBI_NEW_SHEET);
+  if (!shNew || shNew.getLastRow() < 2){
+    ss.toast(`${PBI_NEW_SHEET}: ei rivejä`);
+    return;
+  }
+  const data = shNew.getDataRange().getDisplayValues();
+  const impHdr = data[0].map(String);
+  const rows   = data.slice(1).filter(r => r.some(x => String(x||'').trim() !== ''));
+  if (!rows.length){
+    ss.toast(`${PBI_NEW_SHEET}: ei rivejä`);
+    return;
+  }
+  const shP = ss.getSheetByName(TARGET_SHEET);
+  const pkgHdr = (shP && shP.getLastRow() > 0) ? shP.getRange(1,1,1,shP.getLastColumn()).getDisplayValues()[0].map(String) : [];
+  let unionHdr = mergeHeaders_(pkgHdr, impHdr);
+  // Varmista että Delivered date (Confirmed) ja Delivered_Source ovat mukana
+  ['Delivered date (Confirmed)','Delivered_Source'].forEach(name => {
+    if (!unionHdr.map(normalize_).includes(normalize_(name))){
+      unionHdr.push(name);
+    }
+  });
+  const shA = ss.getSheetByName(ARCHIVE_SHEET) || ss.insertSheet(ARCHIVE_SHEET);
+  const archHdr = ensureArchiveHeader_(shA, unionHdr);
+  const impMap = headerIndexMap_(impHdr);
+  const dstMap = headerIndexMap_(unionHdr);
+  const carrierI = pickAnyIndex_(impHdr, CARRIER_CANDIDATES);
+  const codeI    = pickAnyIndex_(impHdr, TRACKING_CODE_CANDIDATES);
+  const now = new Date(), batchId = 'PBI_'+now.getTime();
+  const payload = rows.map(r => {
+    const line = new Array(unionHdr.length).fill('');
+    for (const [name, si] of Object.entries(impMap)){
+      // Ohita PBI:n Delivered date -sarakkeet (käytetään vain tracking-tarkistusta)
+      if (DELIVERED_DATE_CANDIDATES.map(normalize_).includes(normalize_(name))) continue;
+      const di = dstMap[name];
+      if (typeof di === 'number') line[di] = r[si];
+    }
+    let deliveredAt = '';
+    if (carrierI >= 0 && codeI >= 0){
+      const carrier = String(r[carrierI]||'').trim();
+      const code    = firstCode_(r[codeI]);
+      if (carrier && code){
+        const res = TRK_trackByCarrier_(carrier, code);
+        const isDeliveredNow = /delivered|toimitettu|luovutettu/i.test(res.status || '');
+        if (isDeliveredNow) deliveredAt = res.time || '';
+        line[dstMap['Delivered_Source']] = isDeliveredNow ? 'tracking' : '';
+      }
+    }
+    if (deliveredAt){
+      if (typeof dstMap['Delivered date (Confirmed)'] === 'number'){
+        line[dstMap['Delivered date (Confirmed)']] = deliveredAt;
+      }
+      if (typeof dstMap['Delivered date'] === 'number' && !line[dstMap['Delivered date']]){
+        line[dstMap['Delivered date']] = deliveredAt;
+      }
+    }
+    return line.concat([ now, batchId, 'PowerBI import' ]);
+  });
+  shA.insertRowsAfter(1, payload.length);
+  shA.getRange(2,1,payload.length, archHdr.length).setValues(payload);
+  shNew.clear();
+  shNew.getRange(1,1,1,impHdr.length).setValues([impHdr]);
+  shNew.setFrozenRows(1);
+  ss.toast(`Arkistoitu ${payload.length} riviä → ${ARCHIVE_SHEET} (Reason=PowerBI import, delivered vain jos seurannassa confirmed)`);
+}
+
+/********************* PBI – SOK/KÄRKKÄINEN ************************/
+/**
+ * Power BI -tuonnin tulosten jakaminen SOK/Kärkkäinen-raportteihin.
+ * Olettaa, että PowerBI_Import ja/tai PowerBI_New on tuotu.
+ */
+function pbiImportAndSplitSokKrk(){
+  // Yhdistetään SOK/Kärkkäinen kaikkiin jo tuotuihin riveihin (PowerBI_New sheet)
+  makeWeeklyReportsSunSun_Only(); 
+  // Huom: makeWeeklyReportsSunSun_Only käyttää TARGET_SHEET → vie vain viime viikon.
+  // Käytetäänkin suoraan Build Always jos halutaan kaikki
+  buildSokKarkkainenAlways();
+  SpreadsheetApp.getActive().toast('Power BI data jaettu SOK/Kärkkäinen -sheetteihin');
+}
+
+/********************* DAILY & TIMERS *****************************/
+function runDailyFlowOnce(){
+  const ss = SpreadsheetApp.getActive();
+  const log = ss.getSheetByName(RUN_LOG_SHEET) || ss.insertSheet(RUN_LOG_SHEET);
+  log.clear();
+  log.getRange(1,1,1,5).setValues([['Step','Status','Message','Rows/Info','Duration (s)']]);
+  const steps = [
+    { name:'Gmail → Packages/Archive', fn: fetchAndRebuild, info: () => {
+        const p = ss.getSheetByName(TARGET_SHEET), a = ss.getSheetByName(ARCHIVE_SHEET);
+        return `Packages:${p ? Math.max(0, p.getLastRow()-1) : 0} Archive:${a ? Math.max(0, a.getLastRow()-1) : 0}`;
+      }
+    },
+    { name:'Rakenna Vaatii_toimenpiteitä (ei-toimitetut)', fn: buildPendingFromPackagesAndArchive, info: () => {
+        const s = ss.getSheetByName(ACTION_SHEET);
+        return `Rows:${s ? Math.max(0, s.getLastRow()-1) : 0}`;
+      }
+    },
+    { name:'Päivitä status: Vaatii_toimenpiteitä', fn: refreshStatuses_Vaatii, info: () => 'OK' },
+    { name:'Arkiston duplikaattitarkistus', fn: checkArchiveDuplicates, info: () => 'OK' }
+  ];
+  const out = [];
+  for (const step of steps){
+    const t0 = new Date();
+    let st = 'OK', msg = '';
+    try {
+      step.fn();
+    } catch(e){
+      st = 'FAIL';
+      msg = String(e && e.message ? e.message : e);
+    }
+    const dur = (((new Date()) - t0) / 1000).toFixed(2);
+    const info = (step.info ? step.info() : '');
+    out.push([ step.name, st, msg, info, dur ]);
+  }
+  log.getRange(2,1,out.length,5).setValues(out);
+  ss.setActiveSheet(log);
+}
+function setupWeekday1200_DailyFlow(){
+  // clearAllTriggers();  // (Ei poisteta muita ajastuksia tässä)
+  // Luo arkisin klo 12:00 laukaiseva ajastettu triggeri
+  [ ScriptApp.WeekDay.MONDAY, ScriptApp.WeekDay.TUESDAY, ScriptApp.WeekDay.WEDNESDAY,
+    ScriptApp.WeekDay.THURSDAY, ScriptApp.WeekDay.FRIDAY ].forEach(d => {
+      ScriptApp.newTrigger('runDailyFlowOnce').timeBased().onWeekDay(d).atHour(12).create();
+  });
+  SpreadsheetApp.getActive().toast('Ajastus lisätty: arkisin klo 12:00');
+}
+function setupWeeklyMon0200(){
+  // Luo joka maanantai 02:00 laukaiseva triggeri
+  ScriptApp.newTrigger('makeWeeklyReportsSunSun').timeBased().onWeekDay(ScriptApp.WeekDay.MONDAY).atHour(2).create();
+  SpreadsheetApp.getActive().toast('Ajastus lisätty: viikkoraportti ma 02:00');
+}
+function clearAllTriggers(){
+  ScriptApp.getProjectTriggers().forEach(t => ScriptApp.deleteTrigger(t));
+  SpreadsheetApp.getActive().toast('Kaikki ajastetut ajot poistettu');
+}
+
+/********************* “Vahvista & Arkistoi” **********************/
+function confirmMissingDeliveredTimes(sheetName){
+  sheetName = sheetName || ACTION_SHEET;
+  const ss = SpreadsheetApp.getActive();
+  const sh = ss.getSheetByName(sheetName);
+  if (!sh || sh.getLastRow() < 2){
+    ss.toast(`${sheetName}: ei rivejä`);
+    return;
+  }
+  const data = sh.getDataRange().getDisplayValues();
+  const hdr  = data[0].map(String);
+  const rows = data.slice(1);
+  const idxRef   = ensureRefreshCols_(sh, hdr);
+  const carrierI = pickAnyIndex_(hdr, CARRIER_CANDIDATES);
+  const codeI    = pickAnyIndex_(hdr, TRACKING_CODE_CANDIDATES);
+  const confI    = hdr.indexOf('Delivered date (Confirmed)');
+  const flagI    = pickAnyIndex_(hdr, DELIVERED_FLAG_CANDIDATES);
+  if (carrierI < 0 || codeI < 0){
+    ss.toast(`${sheetName}: ei Carrier/Tracking -sarakkeita`);
+    return;
+  }
+  let hits = 0;
+  const out = rows.map(r => {
+    const row = r.slice(0, hdr.length);
+    const deliveredFlag =
+      (flagI >= 0 && /delivered|toimitettu|luovutettu/i.test(String(row[flagI]||''))) ||
+      (typeof idxRef.status === 'number' && /delivered|toimitettu|luovutettu/i.test(String(row[idxRef.status]||'')));
+    const hasConfirmed = (confI >= 0 && String(row[confI]||'').trim());
+    if (deliveredFlag && !hasConfirmed){
+      const carrier = String(row[carrierI]||'').trim();
+      const code    = firstCode_(row[codeI]);
+      const res = (carrier && code) ? TRK_trackByCarrier_(carrier, code) : {};
+      if (/delivered|toimitettu|luovutettu/i.test(res.status || '') && res.time){
+        row[confI] = res.time;
+        if (typeof idxRef.delivSource === 'number') row[idxRef.delivSource] = 'tracking';
+        hits++;
+      } else if (typeof idxRef.time === 'number' && String(row[idxRef.time]||'').trim()){
+        row[confI] = row[idxRef.time];
+        if (typeof idxRef.delivSource === 'number') row[idxRef.delivSource] = 'refreshTime';
+        hits++;
+      }
+    }
+    return row;
+  });
+  sh.clearContents();
+  sh.getRange(1,1,1,hdr.length).setValues([hdr]);
+  if (out.length) {
+    sh.getRange(2,1,out.length,hdr.length).setValues(out);
+  }
+  sh.setFrozenRows(1);
+  ss.toast(`${sheetName}: vahvistettu toimitusaika ${hits} riville`);
+}
+function confirmAndArchiveDelivered(){
+  confirmMissingDeliveredTimes(ACTION_SHEET);
+  archiveDeliveredFromVaatii();
+}
+function archiveDeliveredFromVaatii(){
+  const ss  = SpreadsheetApp.getActive();
+  const shV = ss.getSheetByName(ACTION_SHEET);
+  if (!shV || shV.getLastRow() < 2){
+    ss.toast('Vaatii_toimenpiteitä: ei rivejä');
+    return;
+  }
+  const data = shV.getDataRange().getDisplayValues();
+  const vHdr = data[0].map(String);
+  const rows = data.slice(1);
+  const keyIV = chooseKeyIndex_(vHdr);
+  if (keyIV < 0) throw new Error('Vaatii_toimenpiteitä: avainsaraketta ei löytynyt.');
+  const delI  = pickDeliveredIndex_(vHdr);
+  const confI = vHdr.indexOf('Delivered date (Confirmed)');
+  const flagI = pickAnyIndex_(vHdr, DELIVERED_FLAG_CANDIDATES);
+  const idxRef = ensureRefreshCols_(shV, vHdr);
+  const isDeliveredRow = row => {
+    const hasDate  = (delI >= 0 && String(row[delI]||'').trim()) || (confI >= 0 && String(row[confI]||'').trim());
+    const baseFlag = (flagI >= 0 && /delivered|toimitettu|luovutettu/i.test(String(row[flagI]||'')));
+    const refFlag  = (typeof idxRef.status === 'number' && /delivered|toimitettu|luovutettu/i.test(String(row[idxRef.status]||'')));
+    return hasDate || baseFlag || refFlag;
+  };
+  const delivered = [], keep = [];
+  rows.forEach(r => {
+    if (isDeliveredRow(r) && confI >= 0 && !String(r[confI]||'').trim()){
+      // Jos delivered, mutta Confirmed-aika puuttuu → täydennä RefreshTime:sta
+      if (typeof idxRef.time === 'number' && String(r[idxRef.time]||'').trim()){
+        r[confI] = r[idxRef.time];
+      }
+    }
+    (isDeliveredRow(r) ? delivered : keep).push(r);
+  });
+  if (!delivered.length){
+    ss.toast('Vaatii_toimenpiteitä: ei toimitettuja arkistoitavaksi');
+    return;
+  }
+  const shA = ss.getSheetByName(ARCHIVE_SHEET) || ss.insertSheet(ARCHIVE_SHEET);
+  let archHdr = [];
+  if (shA.getLastRow() > 0){
+    archHdr = shA.getRange(1,1,1,shA.getLastColumn()).getDisplayValues()[0].map(String);
+  } else {
+    const shP = ss.getSheetByName(TARGET_SHEET);
+    const pkgHdr = (shP && shP.getLastRow() > 0)
+      ? shP.getRange(1,1,1,shP.getLastColumn()).getDisplayValues()[0].map(String)
+      : vHdr.filter(h => !/^Refresh/i.test(h));
+    archHdr = pkgHdr.concat(['ArchivedOn','BatchId','Reason']);
+    shA.getRange(1,1,1,archHdr.length).setValues([archHdr]);
+  }
+  const ends = archHdr.slice(-3).join('|');
+  const archBaseLen = (ends === 'ArchivedOn|BatchId|Reason') ? archHdr.length - 3 : archHdr.length;
+  const archBaseHdr = archHdr.slice(0, archBaseLen);
+  const archMap = headerIndexMap_(archBaseHdr);
+  const vMap    = headerIndexMap_(vHdr);
+  const archKeyI = chooseKeyIndex_(archBaseHdr);
+  const existing = new Set();
+  if (archKeyI >= 0 && shA.getLastRow() > 1){
+    const d = shA.getRange(2,1,shA.getLastRow()-1, archBaseLen).getDisplayValues();
+    for (const r of d){
+      const k = String(r[archKeyI]||'').trim();
+      if (k) existing.add(k);
+    }
+  }
+  const now = new Date(), batchId = 'VAATII_'+now.getTime();
+  const payload = [];
+  let dupSkipped = 0;
+  for (const r of delivered){
+    const key = String(r[keyIV]||'').trim();
+    if (key && existing.has(key)){
+      dupSkipped++;
+      continue;
+    }
+    const line = new Array(archBaseLen).fill('');
+    for (const [name, vi] of Object.entries(vMap)){
+      const di = archMap[name];
+      if (typeof di === 'number' && di < archBaseLen) {
+        line[di] = r[vi];
+      }
+    }
+    if (archHdr.length === archBaseLen + 3){
+      payload.push(line.concat([ now, batchId, 'delivered from Vaatii' ]));
+    } else {
+      payload.push(line);
+    }
+  }
+  if (payload.length){
+    shA.insertRowsAfter(1, payload.length);
+    shA.getRange(2,1,payload.length, payload[0].length).setValues(payload);
+  }
+  shV.clearContents();
+  shV.getRange(1,1,1,vHdr.length).setValues([vHdr]);
+  if (keep.length) {
+    shV.getRange(2,1,keep.length, vHdr.length).setValues(keep);
+  }
+  shV.setFrozenRows(1);
+  ss.toast(`Arkistoitu ${payload.length} riviä (ohitettu duplikaatteja ${dupSkipped}) → ${ARCHIVE_SHEET}`);
+}
+
+/********************* INTEGRAATIOAVAINETC. ***********************/
+function extractId(urlOrId){
+  const s = String(urlOrId||'').trim();
+  const m = s.match(/[-\w]{25,}/);
+  return m ? m[0] : s;
+}
+function normalize_(s){
+  return String(s || '').toLowerCase().replace(/\s+/g, ' ').trim().replace(/[^\p{L}\p{N}]+/gu, ' ');
+}
+function chooseKeyIndex_(headers){
+  const hdr = headers.map(h => String(h||'').trim());
+  if (FORCE_KEY_NAME){
+    const i = hdr.indexOf(FORCE_KEY_NAME);
+    if (i >= 0) return i;
+  }
+  const norm = hdr.map(normalize_);
+  for (const alts of KEY_CANDIDATES){
+    const cand = alts.map(normalize_);
+    for (const a of cand){
+      const i = norm.indexOf(a);
+      if (i >= 0) return i;
+    }
+  }
+  return -1;
+}
+function mergeHeaders_(oldHdr, newHdr){
+  const out = (oldHdr || []).slice();
+  const have = new Set((oldHdr || []).map(normalize_));
+  for (const h of (newHdr || [])){
+    const n = normalize_(h);
+    if (!have.has(n)){
+      out.push(h);
+      have.add(n);
+    }
+  }
+  return out;
+}
+function headerIndexMap_(hdr){
+  const m = {};
+  (hdr || []).forEach((h, i) => m[h] = i);
+  return m;
+}
+function firstCode_(v){
+  let s = String(v||'').trim();
+  if (!s) return '';
+  // Jos useampi koodi yhdessä solussa, pilko
+  const parts = s.split(/[,\n;]/).map(x => String(x||'').trim()).filter(x => x);
+  return parts.length ? parts[0] : s;
+}
+function isCodeLikely_(code){
+  // Yksinkertainen validiteettitarkistus: pituus väh. 4 ja sisältää sekä kirjaimia että numeroita (tai pelkkiä numeroita)
+  const s = String(code||'').trim();
+  return s.length >= 4;
+}
+function parseDateFlexible_(val){
+  if (!val) return null;
+  let d = new Date(val);
+  if (isNaN(d)) {
+    // Kokeile suomal. formaattia dd.MM.yyyy
+    if (/^\d{1,2}\.\d{1,2}\.\d{4a}/.test(val)){
+      const parts = val.split(/[\s\.]/);
+      if (parts.length >= 3){
+        const [dd,MM,yyyy] = parts;
+        const rest = parts.slice(3).join(' ');
+        d = new Date(`${yyyy}-${MM}-${dd} ${rest}`); // ISO
+      }
+    }
+    if (isNaN(d)){
+      return null;
+    }
+  }
+  return d;
+}
+function dateToYMD_(d){
+  if (!(d instanceof Date)) return String(d||'');
+  const yyyy = d.getFullYear();
+  let m = d.getMonth() + 1, MM = String(m).padStart(2, '0');
+  let dd = String(d.getDate()).padStart(2, '0');
+  return `${yyyy}-${MM}-${dd}`;
+}
+function fmtDateTime_(d){
+  if (!(d instanceof Date)) d = new Date(d);
+  if (isNaN(d)) return '';
+  return Utilities.formatDate(d, SpreadsheetApp.getActive().getSpreadsheetTimeZone(), 'yyyy-MM-dd HH:mm:ss');
+}
+
+/********************* INTEGRAATIOAVAIMET (Script Props) **********/
+function credSaveProps(data) {
+  if (!data || typeof data !== 'object') return { ok:false, msg:'No data' };
+  const sp = PropertiesService.getScriptProperties();
+  Object.keys(data).forEach(k => sp.setProperty(k, String(data[k] ?? '')));
+  return { ok:true };
+}
+function seedKnownAccountsAndKeys(){
+  // Täytä tunnetut avaimet, jotta käyttäjä voi tarvittaessa muokata ennen tallennusta
+  const defaults = {
+    MH_TRACK_URL:     'https://extservices.matkahuolto.fi/mpaketti/public/tracking?ids={{code}}',
+    // MH_BASIC esimerkki: Base64("1234567:salasana")
+    POSTI_TOKEN_URL:  'https://oauth2.posti.com/oauth/token',
+    POSTI_TRACK_URL:  'https://api.posti.fi/tracking/7/shipments/trackingnumbers/{{code}}',
+    // POSTI_BASIC esim: Base64("<clientId>:<clientSecret>")
+    GLS_TOKEN_URL:    'https://api.gls-group.net/oauth2/v2/token',
+    GLS_TRACK_URL:    'https://api.gls-group.net/track-and-trace-v1/tracking/simple/references/{{code}}',
+    // GLS_BASIC esim: Base64("<clientId>:<clientSecret>")
+    DHL_TRACK_URL:    'https://api-eu.dhl.com/track/shipments?trackingNumber={{code}}',
+    // DHL_API_KEY syötetään erikseen
+    BRING_TRACK_URL:  'https://api.bring.com/tracking/api/v2/tracking.json?q={{code}}',
+    // BRING_UID, BRING_KEY, BRING_CLIENT_URL syötetään erikseen
+    BULK_BACKOFF_MINUTES_BASE: '5'
+  };
+  const sp = PropertiesService.getScriptProperties();
+  Object.entries(defaults).forEach(([k, v]) => {
+    if (!sp.getProperty(k)) sp.setProperty(k, String(v));
+  });
+  SpreadsheetApp.getActive().toast('Tunnetut oletusarvot asetettu Script Propertiesiin');
+}
+function seedOptionalDefaults(){
+  // Aseta valinnaiset "Delivered date (Confirmed)" sarakkeet jos puuttuu
+  const sheets = [ TARGET_SHEET, ARCHIVE_SHEET ];
+  const ss = SpreadsheetApp.getActive();
+  for (const name of sheets){
+    const sh = ss.getSheetByName(name);
+    if (!sh || sh.getLastRow() < 1) continue;
+    const headers = sh.getRange(1,1,1,sh.getLastColumn()).getDisplayValues()[0];
+    if (!headers.includes('Delivered date (Confirmed)')){
+      sh.insertColumnAfter(headers.length);
+      sh.getRange(1, headers.length+1).setValue('Delivered date (Confirmed)');
+    }
+    if (!headers.includes('Delivered_Source')){
+      sh.insertColumnAfter(headers.length+1);
+      sh.getRange(1, headers.length+2).setValue('Delivered_Source');
+    }
+  }
+  SpreadsheetApp.getActive().toast('Optional default columns added if missing');
+}
+function showMissingProperties(){
+  const res = readMissingProps_();
+  const ui = SpreadsheetApp.getUi();
+  const must = res.missingMust || [], opt = res.missingOpt || [];
+  const msg =
+    (must.length ? 'PUUTTUU (pakolliset):\n• ' + must.join('\n• ') + '\n\n' : 'Pakolliset OK\n\n') +
+    (opt.length ? 'Puuttuu (valinnaiset):\n• ' + opt.join('\n• ') : '');
+  ui.alert('Integraatioavaimet (Script Properties)', msg, ui.ButtonSet.OK);
+}
+function readMissingProps_(){
+  const sp = PropertiesService.getScriptProperties();
+  const have = sp.getProperties();
+  const mustKeys = [
+    'MH_TRACK_URL','MH_BASIC',
+    'POSTI_TOKEN_URL','POSTI_BASIC','POSTI_TRACK_URL','POSTI_TRK_URL','POSTI_TRK_BASIC','POSTI_TRK_USER','POSTI_TRK_PASS',
+    'GLS_TOKEN_URL','GLS_BASIC','GLS_TRACK_URL',
+    'GLS_FI_TRACK_URL','GLS_FI_API_KEY','GLS_FI_SENDER_ID','GLS_FI_SENDER_IDS','GLS_FI_METHOD',
+    'DHL_API_KEY','DHL_TRACK_URL',
+    'BRING_TRACK_URL','BRING_UID','BRING_KEY','BRING_CLIENT_URL',
+    'RATE_MINMS_DHL','RATE_MINMS_GLS','RATE_MINMS_POSTI',
+    'BULK_BACKOFF_MINUTES_BASE'
+  ];
+  const optionalKeys = [];  // optional keys if needed
+  return {
+    missingMust: mustKeys.filter(k => !have[k]),
+    missingOpt:  optionalKeys.filter(k => !have[k])
+  };
+}
+function showMissingColumns_Active(){
+  const sh = SpreadsheetApp.getActiveSheet();
+  const hdr = (sh.getLastRow() > 0 ? sh.getRange(1,1,1,sh.getLastColumn()).getDisplayValues()[0] : []).map(String);
+  showMissingColumnsForHeader_(hdr, sh.getName());
+}
+function showMissingColumnsForHeader_(headers, title){
+  const missing = [];
+  if (chooseKeyIndex_(headers) < 0) missing.push('Yksilöivä avain (esim. Package Number / Waybill / Tracking)');
+  if (pickAnyIndex_(headers, CARRIER_CANDIDATES) < 0) missing.push('Carrier / Kuljetusliike');
+  if (pickAnyIndex_(headers, TRACKING_CODE_CANDIDATES) < 0) missing.push('Tracking / Waybill / Barcode');
+  if (pickDeliveredIndex_(headers) < 0) missing.push('Delivered date (toimitettu-pvm)');
+  if (pickPostiInIndex_(headers) < 0) missing.push('Posti-in / vastaanotto (esim. "Received at Posti")');
+  if (pickAnyIndex_(headers, ['Order date','Tilauspvm','Order placed','Order created']) < 0) missing.push('Order date / tilauksen pvm');
+  const ui = SpreadsheetApp.getUi();
+  if (!missing.length){
+    ui.alert(`Tarkistus: ${title}`, 'OK – vaaditut otsikot löytyvät.', ui.ButtonSet.OK);
+  } else {
+    ui.alert(`Tarkistus: ${title}`, 'Puuttuvat otsikot:\n• ' + missing.join('\n• '), ui.ButtonSet.OK);
+  }
+}
+
+/********************* TRACKING API FUNCTIONS *********************/
+function TRK_trackMatkahuolto(code){
+  const carrierName = 'Matkahuolto';
+  const sp = PropertiesService.getScriptProperties();
+  const url = (sp.getProperty('MH_TRACK_URL') || '').replace('{{code}}', encodeURIComponent(code));
+  const basic = sp.getProperty('MH_BASIC');
+  if (!url || !basic) return { carrier: carrierName, status: 'MISSING_CREDENTIALS' };
+
+  const res = TRK_safeFetch_(url, {
+    method: 'get',
+    headers: { 'Authorization': 'Basic '+basic, 'Accept':'application/json' },
+    muteHttpExceptions: true
+  });
+
+  if (!res.ok){
+    if (res.code === 429){
+      autoTuneRateLimitOn429_('MH', 200, 2000);
+      logHttpError_(carrierName, code, 'TRK_trackMatkahuolto', url, res.code, 'RATE_LIMIT_429', res.text, res.retryAfter);
+      return { carrier: carrierName, status:'RATE_LIMIT_429', raw: String(res.text||'').slice(0,1000), retryAfter: res.retryAfter };
+    }
+    if (res.status === 'NOT_FOUND') return { carrier: carrierName, status:'NOT_FOUND' };
+    logHttpError_(carrierName, code, 'TRK_trackMatkahuolto', url, res.code, res.status, res.text, null);
+    return { carrier: carrierName, status: res.status, raw: String(res.text||'').slice(0,1000) };
+  }
+
+  try {
+    const data = JSON.parse(res.text);
+    const cons = data.consignment && data.consignment[0];
+    const events = (cons && cons.event) || [];
+    if (!events.length) return { carrier: carrierName, found:true, status:'IN_TRANSIT', time:'', location:'', raw:'' };
+    const latest = events.slice().sort((a,b) => new Date(b.eventTime) - new Date(a.eventTime))[0];
+    return {
+      carrier: carrierName,
+      found: true,
+      status: latest.status || latest.description || '',
+      time: latest.eventTime ? fmtDateTime_(latest.eventTime) : '',
+      location: latest.location || '',
+      raw: ''
+    };
+  } catch(e){
+    return { carrier: carrierName, status:'PARSING_ERROR', raw: String(res.text||'').slice(0,1000) };
+  }
+}
+
+// Posti (OAuth2 token or fallback Basic if provided)
+function TRK_trackPosti(code){
+  const carrierName = 'Posti';
+  const sp = PropertiesService.getScriptProperties();
+  const tokenUrl = sp.getProperty('POSTI_TOKEN_URL');
+  const basic    = sp.getProperty('POSTI_BASIC');
+  const url      = (sp.getProperty('POSTI_TRACK_URL') || '').replace('{{code}}', encodeURIComponent(code));
+  if (!url) return { carrier: carrierName, status: 'MISSING_CREDENTIALS' };
+
+  let token = '';
+  if (tokenUrl && basic){
+    const tRes = TRK_safeFetch_(tokenUrl, {
+      method: 'post',
+      headers: { 'Authorization': 'Basic '+basic, 'Content-Type': 'application/x-www-form-urlencoded' },
+      payload: 'grant_type=client_credentials&scope=shipment.read',
+      muteHttpExceptions: true
+    });
+    if (tRes.ok){
+      try { token = JSON.parse(tRes.text).access_token || ''; } catch(e){}
+    }
+  }
+
+  const headers = token ? { 'Authorization': 'Bearer '+token, 'Accept':'application/json' }
+                        : { 'Accept':'application/json' };
+  const res = TRK_safeFetch_(url, { method:'get', headers, muteHttpExceptions:true });
+
+  if (!res.ok){
+    if (res.code === 429){
+      autoTuneRateLimitOn429_('POSTI', 200, 2000);
+      logHttpError_(carrierName, code, 'TRK_trackPosti', url, res.code, 'RATE_LIMIT_429', res.text, res.retryAfter);
+      return { carrier: carrierName, status:'RATE_LIMIT_429', raw: String(res.text||'').slice(0,1000), retryAfter: res.retryAfter };
+    }
+    if (res.status === 'NOT_FOUND') return { carrier: carrierName, status:'NOT_FOUND' };
+    logHttpError_(carrierName, code, 'TRK_trackPosti', url, res.code, res.status, res.text, null);
+    return { carrier: carrierName, status: res.status, raw: String(res.text||'').slice(0,1000) };
+  }
+
+  try {
+    const data = JSON.parse(res.text);
+    const ship = data.shipments && data.shipments[0];
+    const evts = (ship && ship.events) || [];
+    if (!evts.length) return { carrier: carrierName, found:true, status:'IN_TRANSIT', time:'', location:'', raw: res.text };
+    const latest = evts.slice().sort((a,b)=> new Date(b.timestamp) - new Date(a.timestamp))[0];
+    return {
+      carrier: carrierName,
+      found: true,
+      status: latest.description || latest.eventType || '',
+      time: latest.timestamp ? fmtDateTime_(latest.timestamp) : '',
+      location: latest.locationCode || latest.location || '',
+      raw: ''
+    };
+  } catch(e){
+    return { carrier: carrierName, status:'PARSING_ERROR', raw: String(res.text||'').slice(0,1000) };
+  }
+}
+
+}
+// GLS (FI v2 API or OAuth fallback)
+function TRK_trackGLS(code){
+  const carrierName = 'GLS';
+  const sp = PropertiesService.getScriptProperties();
+
+  // FI v2?
+  const fiUrl    = (sp.getProperty('GLS_FI_TRACK_URL') || '').replace('{{code}}', encodeURIComponent(code));
+  const apiKey   = sp.getProperty('GLS_FI_API_KEY') || '';
+  const senderId = sp.getProperty('GLS_FI_SENDER_ID') || '';
+  const method   = sp.getProperty('GLS_FI_METHOD') || 'GET';
+
+  if (fiUrl){
+    const headers = { 'x-api-key': apiKey, 'Accept':'application/json' };
+    if (senderId) headers['x-ib-sender-id'] = senderId;
+    const res = TRK_safeFetch_(fiUrl, { method, headers, muteHttpExceptions:true });
+    if (!res.ok){
+      if (res.code === 429){
+        autoTuneRateLimitOn429_('GLS', 200, 2000);
+        logHttpError_(carrierName, code, 'TRK_trackGLS_v2', fiUrl, res.code, 'RATE_LIMIT_429', res.text, res.retryAfter);
+        return { carrier: carrierName, status:'RATE_LIMIT_429', raw: String(res.text||'').slice(0,1000), retryAfter: res.retryAfter };
+      }
+      if (res.status === 'NOT_FOUND') return { carrier: carrierName, status:'NOT_FOUND' };
+      logHttpError_(carrierName, code, 'TRK_trackGLS_v2', fiUrl, res.code, res.status, res.text, null);
+      return { carrier: carrierName, status: res.status, raw: String(res.text||'').slice(0,1000) };
+    }
+    try {
+      const data = JSON.parse(res.text);
+      const pkg = data.statuses && data.statuses[0];
+      const hist = (pkg && pkg.history) || [];
+      if (!hist.length) return { carrier: carrierName, found:true, status:'IN_TRANSIT', time:'', location:'', raw: res.text };
+      const latest = hist.slice().sort((a,b)=> new Date(b.dateTime) - new Date(a.dateTime))[0];
+      return {
+        carrier: carrierName,
+        found: true,
+        status: latest.statusText || latest.status || '',
+        time: latest.dateTime ? fmtDateTime_(latest.dateTime) : '',
+        location: latest.location || '',
+        raw: ''
+      };
+    } catch(e){
+      return { carrier: carrierName, status:'PARSING_ERROR', raw: String(res.text||'').slice(0,1000) };
+    }
+  }
+
+  // OAuth fallback (GLS global)
+  const tokenUrl = sp.getProperty('GLS_TOKEN_URL'), basic = sp.getProperty('GLS_BASIC');
+  const trackUrl = (sp.getProperty('GLS_TRACK_URL') || '').replace('{{code}}', encodeURIComponent(code));
+  if (!tokenUrl || !basic || !trackUrl) return { carrier: carrierName, status: 'MISSING_CREDENTIALS' };
+
+  let token = '';
+  const tRes = TRK_safeFetch_(tokenUrl, {
+    method:'post',
+    headers: { 'Authorization':'Basic '+basic, 'Content-Type':'application/x-www-form-urlencoded' },
+    payload:'grant_type=client_credentials',
+    muteHttpExceptions:true
+  });
+  if (tRes.ok){
+    try { token = JSON.parse(tRes.text).access_token || ''; } catch(e){}
+  }
+
+  const res = TRK_safeFetch_(trackUrl, { method:'get', headers: token ? { 'Authorization':'Bearer '+token, 'Accept':'application/json' } : { 'Accept':'application/json' }, muteHttpExceptions:true });
+
+  if (!res.ok){
+    if (res.code === 429){
+      autoTuneRateLimitOn429_('GLS', 200, 2000);
+      logHttpError_(carrierName, code, 'TRK_trackGLS_oauth', trackUrl, res.code, 'RATE_LIMIT_429', res.text, res.retryAfter);
+      return { carrier: carrierName, status:'RATE_LIMIT_429', raw: String(res.text||'').slice(0,1000), retryAfter: res.retryAfter };
+    }
+    if (res.status === 'NOT_FOUND') return { carrier: carrierName, status:'NOT_FOUND' };
+    logHttpError_(carrierName, code, 'TRK_trackGLS_oauth', trackUrl, res.code, res.status, res.text, null);
+    return { carrier: carrierName, status: res.status, raw: String(res.text||'').slice(0,1000) };
+  }
+
+  try {
+    const data = JSON.parse(res.text);
+    const shipment = data.track && data.track.shipment && data.track.shipment[0];
+    const events = (shipment && shipment.events) || [];
+    if (!events.length) return { carrier: carrierName, found:true, status:'IN_TRANSIT', time:'', location:'', raw: res.text };
+    const latest = events.slice().sort((a,b)=> new Date(b.date) - new Date(a.date))[0];
+    return {
+      carrier: carrierName,
+      found: true,
+      status: latest.statusDescription || latest.status || latest.eventName || '',
+      time: latest.date ? fmtDateTime_(latest.date) : '',
+      location: latest.location || '',
+      raw: ''
+    };
+  } catch(e){
+    return { carrier: carrierName, status:'PARSING_ERROR', raw: String(res.text||'').slice(0,1000) };
+  }
+}
+
+}
+function TRK_trackDHL(code){
+  const carrierName = 'DHL';
+  const sp = PropertiesService.getScriptProperties();
+  const url = (sp.getProperty('DHL_TRACK_URL') || '').replace('{{code}}', encodeURIComponent(code));
+  const key = sp.getProperty('DHL_API_KEY');
+  if (!url || !key) return { carrier: carrierName, status: 'MISSING_CREDENTIALS' };
+
+  const res = TRK_safeFetch_(url, {
+    method:'get',
+    headers:{ 'DHL-API-Key': key, 'Accept':'application/json' },
+    muteHttpExceptions:true
+  });
+
+  if (!res.ok){
+    if (res.code === 429){
+      autoTuneRateLimitOn429_('DHL', 200, 2000);
+      logHttpError_(carrierName, code, 'TRK_trackDHL', url, res.code, 'RATE_LIMIT_429', res.text, res.retryAfter);
+      return { carrier: carrierName, status:'RATE_LIMIT_429', raw: String(res.text||'').slice(0,1000), retryAfter: res.retryAfter };
+    }
+    if (res.status === 'NOT_FOUND') return { carrier: carrierName, status:'NOT_FOUND' };
+    logHttpError_(carrierName, code, 'TRK_trackDHL', url, res.code, res.status, res.text, null);
+    return { carrier: carrierName, status: res.status, raw: String(res.text||'').slice(0,1000) };
+  }
+
+  try {
+    const data = JSON.parse(res.text);
+    const ship = data.shipments && data.shipments[0];
+    if (!ship || !ship.status) return { carrier: carrierName, status:'NOT_FOUND' };
+    const ev = (ship.events && ship.events[0]) || {};
+    return {
+      carrier: carrierName,
+      found: true,
+      status: ship.status.status || ship.status.statusCode || '',
+      time: ev.timestamp ? fmtDateTime_(ev.timestamp) : '',
+      location: ev.location && (ev.location.address && ev.location.address.addressLocality || ev.location.name) || '',
+      raw: ''
+    };
+  } catch(e){
+    return { carrier: carrierName, status:'PARSING_ERROR', raw: String(res.text||'').slice(0,1000) };
+  }
+}
+
+// Bring
+function TRK_trackBring(code){
+  const carrierName = 'Bring';
+  const sp = PropertiesService.getScriptProperties();
+  const url = (sp.getProperty('BRING_TRACK_URL') || '').replace('{{code}}', encodeURIComponent(code));
+  const uid = sp.getProperty('BRING_UID'), key = sp.getProperty('BRING_KEY');
+  const clientUrl = sp.getProperty('BRING_CLIENT_URL') || 'https://example.com';
+  if (!url || !uid || !key) return { carrier: carrierName, status: 'MISSING_CREDENTIALS' };
+
+  const res = TRK_safeFetch_(url, {
+    method:'get',
+    headers:{
+      'X-MyBring-API-Uid': uid,
+      'X-MyBring-API-Key': key,
+      'X-Bring-Client-URL': clientUrl,
+      'Accept':'application/json',
+      'api-version':'2'
+    },
+    muteHttpExceptions:true
+  });
+
+  if (!res.ok){
+    if (res.code === 429){
+      autoTuneRateLimitOn429_('BRING', 200, 2000);
+      logHttpError_(carrierName, code, 'TRK_trackBring', url, res.code, 'RATE_LIMIT_429', res.text, res.retryAfter);
+      return { carrier: carrierName, status:'RATE_LIMIT_429', raw: String(res.text||'').slice(0,1000), retryAfter: res.retryAfter };
+    }
+    if (res.status === 'NOT_FOUND') return { carrier: carrierName, status:'NOT_FOUND' };
+    logHttpError_(carrierName, code, 'TRK_trackBring', url, res.code, res.status, res.text, null);
+    return { carrier: carrierName, status: res.status, raw: String(res.text||'').slice(0,1000) };
+  }
+
+  try {
+    const data = JSON.parse(res.text);
+    const set = data.consignmentSet && data.consignmentSet[0];
+    const pkg = set && set.packageSet && set.packageSet[0];
+    const events = (pkg && pkg.eventSet) || [];
+    if (!events.length) return { carrier: carrierName, found:true, status:'IN_TRANSIT', time:'', location:'', raw: res.text };
+    const latest = events.slice().sort((a,b)=> new Date(b.dateIso) - new Date(a.dateIso))[0];
+    return {
+      carrier: carrierName,
+      found: true,
+      status: latest.description || latest.status || '',
+      time: latest.dateIso ? fmtDateTime_(latest.dateIso) : '',
+      location: latest.postalCode || latest.countryCode || latest.city || '',
+      raw: ''
+    };
+  } catch(e){
+    return { carrier: carrierName, status:'PARSING_ERROR', raw: String(res.text||'').slice(0,1000) };
+  }
+}
+
+// Generic safe fetch with retry after (if present in headers)
+function TRK_safeFetch_(url, params){
+  try {
+    const resp = UrlFetchApp.fetch(url, params);
+    const code = resp.getResponseCode();
+    const text = resp.getContentText();
+    const headers = (resp.getAllHeaders ? resp.getAllHeaders() : resp.getHeaders()) || {};
+    const ra = headers['Retry-After'] || headers['retry-after'];
+    const retryAfter = ra ? parseInt(ra, 10) : null;
+
+    if (code === 429){
+      return { ok:false, code, status:'RATE_LIMIT_429', text, headers, retryAfter };
+    }
+    if (code >= 200 && code < 300){
+      return { ok:true, code, text, headers };
+    }
+    if (code === 404){
+      return { ok:false, code, status:'NOT_FOUND', text, headers };
+    }
+    return { ok:false, code, status:'HTTP_'+code, text, headers };
+  } catch(e){
+    return { ok:false, code:0, status:'NETWORK_ERROR', text:String(e && e.message ? e.message : e) };
+  }
+}
+
+function TRK_trackByCarrier_(carrier, code){
+  const c = String(carrier||'').toLowerCase();
+  try {
+    if (c.includes('matkahuolto') || c.includes('mh')){
+      return TRK_trackMatkahuolto(code);
+    } else if (c.includes('posti') || c.includes('posti.fi') || c.includes('itella')){
+      return TRK_trackPosti(code);
+    } else if (c.includes('gls')){
+      return TRK_trackGLS(code);
+    } else if (c.includes('dhl')){
+      return TRK_trackDHL(code);
+    } else if (c.includes('bring')){
+      return TRK_trackBring(code);
+    } else {
+      // Tuntematon carrier
+      return { carrier: carrier, status: 'UNKNOWN_CARRIER' };
+    }
+  } catch(e){
+    // Return error status, possibly with HTTP code from safeFetch if included
+    const msg = String(e && e.message ? e.message : e);
+    if (/MISSING_CREDENTIALS/.test(msg)) {
+      return { carrier: carrier, status: 'MISSING_CREDENTIALS' };
+    } else if (/NOT_FOUND/.test(msg) || /NO_DATA/.test(msg)) {
+      return { carrier: carrier, status: 'NOT_FOUND' };
+    } else if (/RATE_LIMIT_429/.test(msg)){
+      return { carrier: carrier, status: 'RATE_LIMIT_429' };
+    } else {
+      return { carrier: carrier, status: 'ERROR', error: msg };
+    }
+  }
+}
+
+
+/**
+ * Täydennyspaketti: puuttuvat helperit + CredentialsHub.html
+ *
+ * Käyttö: kopioi nämä pätkät omaan projektiisi.
+ * - Lisää GS-osuudet samaan .gs-tiedostoon (tai uuteen .gs)
+ * - Luo lisäksi uusi HTML-tiedosto nimellä: CredentialsHub
+ *
+ * Tämä paketti täydentää mm. seuraavat viittaukset alkuperäisestä skriptistäsi:
+ *   - DELIVERED_KEYWORDS
+ *   - sanitizeMatrix_()
+ *   - getCfgInt_()
+ *   - trkComputeNextAtFromRetryAfter_()
+ *   - checkArchiveDuplicates()
+ *   - credLoadProps() (HTML-paneelia varten)
+ */
+
+/********************* GS: PUUTTUVAT KONSTANTIT *******************/
+const DELIVERED_KEYWORDS = [
+  'delivered','toimitettu','luovutettu','delivered to pickup','delivered to recipient','noudettu'
+];
+
+/********************* GS: HELPERIT *******************************/
+/** Varmistaa että matriisi on suorakaide ja normalisoi null/undefined → '' */
+function sanitizeMatrix_(values){
+  if (!values || !values.length) return [];
+  const rows = values.map(r => Array.isArray(r) ? r.slice() : [r]);
+  const cols = rows.reduce((m, r) => Math.max(m, r.length), 0);
+  return rows.map(r => {
+    const out = new Array(cols);
+    for (let i = 0; i < cols; i++){
+      const v = (r[i] === null || r[i] === undefined) ? '' : r[i];
+      out[i] = typeof v === 'string' ? v : (v && v.toString ? v.toString() : v);
+    }
+    return out;
+  });
+}
+
+/** Lue kokonaislukukonfig arvo Script Propertiesista */
+function getCfgInt_(key){
+  const sp = PropertiesService.getScriptProperties();
+  const raw = sp.getProperty(String(key||''));
+  const v = parseInt(raw, 10);
+  return Number.isFinite(v) ? v : null;
+}
+
+/** Muunna Retry-After (sekunteina) seuraavaksi ajaksi */
+function trkComputeNextAtFromRetryAfter_(retryAfter){
+  const secs = parseInt(retryAfter, 10);
+  const ms = (Number.isFinite(secs) && secs > 0) ? secs*1000 : 5*60*1000; // oletus 5 min
+  return new Date(Date.now() + ms);
+}
+
+/********************* GS: ARKISTON DUPLIKAATIT ******************/ 
+/**
+ * Luo yhteenvedon duplikaattiavaimista arkistossa.
+ * Kirjoittaa tuloksen välilehdelle 'Archive_Duplicates'.
+ */
+function checkArchiveDuplicates(){
+  const ss = SpreadsheetApp.getActive();
+  const shA = ss.getSheetByName(ARCHIVE_SHEET);
+  if (!shA || shA.getLastRow() < 2){
+    ss.toast(`${ARCHIVE_SHEET}: ei rivejä`);
+    return;
+  }
+  const data = shA.getDataRange().getDisplayValues();
+  const hdr = data[0].map(String);
+  const keyI = chooseKeyIndex_(hdr);
+  if (keyI < 0){
+    ss.toast(`${ARCHIVE_SHEET}: avainsaraketta ei löytynyt`);
+    return;
+  }
+  const seen = new Map();
+  for (let r = 1; r < data.length; r++){
+    const k = String(data[r][keyI]||'').trim();
+    if (!k) continue;
+    const arr = seen.get(k) || [];
+    arr.push(r+1); // 1-indexed sheet row
+    seen.set(k, arr);
+  }
+  const dups = [...seen.entries()].filter(([_, rows]) => rows.length > 1)
+    .map(([k, rows]) => [k, rows.length, rows.join(', ')]);
+
+  const name = 'Archive_Duplicates';
+  const sh = ss.getSheetByName(name) || ss.insertSheet(name);
+  sh.clear();
+  sh.getRange(1,1,1,3).setValues([[ 'Key', 'Count', 'Rows in Archive' ]]);
+  if (dups.length) sh.getRange(2,1,dups.length,3).setValues(dups);
+  sh.setFrozenRows(1);
+  ss.toast(`Arkistossa duplikaatteja: ${dups.length}`);
+}
+
+/********************* GS: CREDENTIALS HUB -APU *******************/
+/** Palauta kaikki Script Properties -avaimet UI:lle */
+function credLoadProps(){
+  return PropertiesService.getScriptProperties().getProperties();
+}
+
+    function toKVText(obj){
+      const lines = [];
+      const keys = Object.keys(obj || {}).sort();
+      keys.forEach(k => lines.push(`${k}=${obj[k] ?? ''}`));
+      return lines.join('\n');
+    }
+    function parseKVText(text){
+      const out = {};
+      (text || '').split(/\r?\n/).forEach(line => {
+        const s = line.trim();
+        if (!s || s.startsWith('#')) return;
+        const i = s.indexOf('=');
+        if (i < 0) return;
+        const k = s.slice(0,i).trim();
+        const v = s.slice(i+1).trim();
+        if (k) out[k] = v;
+      });
+      return out;
+    }
+    function renderMissing(res){
+      const must = (res && res.missingMust) || [];
+      const opt  = (res && res.missingOpt) || [];
+      el('missing').innerHTML =
+        (must.length ? `<div style='margin-bottom:6px'><strong>PUUTTUU (pakolliset):</strong><br>• ${must.join('<br>• ')}</div>` : '<div>Pakolliset: OK</div>') +
+        (opt.length  ? `<div style='margin-top:8px'><strong>Puuttuu (valinnaiset):</strong><br>• ${opt.join('<br>• ')}</div>` : '');
+    }
+
+    function loadAll(){
+      google.script.run.withSuccessHandler(props => {
+        el('kv').value = toKVText(props);
+      }).credLoadProps();
+      google.script.run.withSuccessHandler(renderMissing).readMissingProps_();
+    }
+    document.getElementById('save').addEventListener('click', () => {
+      const data = parseKVText(el('kv').value);
+      el('status').textContent = 'Tallennetaan…';
+      google.script.run
+        .withSuccessHandler(res => {
+          el('status').textContent = res && res.ok ? 'Tallennettu.' : (res && res.msg ? res.msg : 'Virhe tallennuksessa');
+          loadAll();
+        })
+        .withFailureHandler(err => {
+          el('status').textContent = 'Virhe: ' + (err && err.message ? err.message : err);
+        })
+        .credSaveProps(data);
+    });
+    document.getElementById('seed').addEventListener('click', () => {
+      el('status').textContent = 'Asetetaan oletuksia…';
+      google.script.run
+        .withSuccessHandler(() => { el('status').textContent = 'Oletukset asetettu.'; loadAll(); })
+        .withFailureHandler(err => { el('status').textContent = 'Virhe: ' + (err && err.message ? err.message : err); })
+        .seedKnownAccountsAndKeys();
+    });
+    loadAll();
+    /*** Bridge: valikko → nykyinen Credentials-paneeli ***/
+function showCredentialsHub() {
+  // avaa sinun valmiin sivupalkin
+  openCredsPanel();
+}
+<!-- 02_CredentialsHub.html — päivitetty (sis. KAUKO-vinkit) -->
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <base target="_top" />
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 0; }
+    header { padding: 14px 16px; background: #202124; color: #fff; }
+    main { padding: 12px 16px; }
+    .row { margin: 10px 0; }
+    textarea { width: 100%; min-height: 260px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    button { padding: 10px 14px; border: 0; border-radius: 10px; box-shadow: 0 1px 3px rgba(0,0,0,.1); cursor: pointer; }
+    .primary { background: #1a73e8; color: white; }
+    .ghost { background: #f1f3f4; }
+    .muted { color: #666; }
+    .status { white-space: pre-wrap; background: #f7f7f7; border-radius: 8px; padding: 8px; margin-top: 10px; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    @media (max-width: 900px){ .grid { grid-template-columns: 1fr; } }
+    .card { border: 1px solid #eee; border-radius: 12px; padding: 12px; }
+    .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; background: #e8f0fe; color: #174ea6; font-size: 12px; margin-right: 6px; }
+    code { background:#f1f3f4; padding:2px 4px; border-radius:4px; }
+  </style>
+</head>
+<body>
+  <header><h2 style="margin:0">Asetuspaneeli (Credentials Hub)</h2></header>
+  <main>
+    <div class="grid">
+      <div class="card">
+        <h3 style="margin-top:0">Avaimet</h3>
+        <div class="row muted">Syötä muodossa <code>KEY=VALUE</code> (yksi per rivi). Tallenna korvataksesi arvot.</div>
+        <textarea id="kv"></textarea>
+        <div class="row">
+          <button class="primary" id="save">Tallenna</button>
+          <button class="ghost" id="seed">Täytä oletukset</button>
+        </div>
+        <div class="status" id="status"></div>
+      </div>
+      <div class="card">
+        <h3 style="margin-top:0">Tarkistus</h3>
+        <div id="missing"></div>
+        <div class="row muted">
+          Vinkki: avaa myös valikosta <span class="pill">Shipment → Tarkistimet → Integraatioavaimet</span><br>
+          <small>KAUKOKIITO: käytä joko <code>KAUKO_TRACK_URL</code> + ( <code>KAUKO_API_KEY</code> tai <code>KAUKO_BASIC</code> ) TAI kevyt <code>KAUKO_SCRAPE_URL</code>.</small>
+        </div>
+      </div>
+    </div>
+  </main>
+  <script>
+    const el = (id) => document.getElementById(id);
+
+    function toKVText(obj){
+      const keys = Object.keys(obj || {}).sort();
+      return keys.map(k => `${k}=${obj[k] ?? ''}`).join('\\n');
+    }
+    function parseKVText(text){
+      const out = {};
+      (text || '').split(/\\r?\\n/).forEach(line => {
+        const s = line.trim();
+        if (!s || s.startsWith('#')) return;
+        const i = s.indexOf('=');
+        if (i < 0) return;
+        const k = s.slice(0,i).trim();
+        const v = s.slice(i+1).trim();
+        if (k) out[k] = v;
+      });
+      return out;
+    }
+    function renderMissing(res){
+      const must = (res && res.missingMust) || [];
+      const opt  = (res && res.missingOpt) || [];
+      el('missing').innerHTML =
+        (must.length ? `<div style='margin-bottom:6px'><strong>PUUTTUU (pakolliset):</strong><br>• ${must.join('<br>• ')}</div>` : '<div>Pakolliset: OK</div>') +
+        (opt.length  ? `<div style='margin-top:8px'><strong>Puuttuu (valinnaiset):</strong><br>• ${opt.join('<br>• ')}</div>` : '');
+    }
+
+    function loadAll(){
+      google.script.run.withSuccessHandler(props => { el('kv').value = toKVText(props); }).credLoadProps();
+      google.script.run.withSuccessHandler(renderMissing).readMissingProps_();
+    }
+    document.getElementById('save').addEventListener('click', () => {
+      const data = parseKVText(el('kv').value);
+      el('status').textContent = 'Tallennetaan…';
+      google.script.run
+        .withSuccessHandler(res => {
+          el('status').textContent = (res && res.ok) ? 'Tallennettu.' : (res && res.msg ? res.msg : 'Virhe tallennuksessa');
+          loadAll();
+        })
+        .withFailureHandler(err => { el('status').textContent = 'Virhe: ' + (err && err.message ? err.message : err); })
+        .credSaveProps(data);
+    });
+    document.getElementById('seed').addEventListener('click', () => {
+      el('status').textContent = 'Asetetaan oletuksia…';
+      google.script.run
+        .withSuccessHandler(() => { el('status').textContent = 'Oletukset asetettu.'; loadAll(); })
+        .withFailureHandler(err => { el('status').textContent = 'Virhe: ' + (err && err.message ? err.message : err); })
+        .seedKnownAccountsAndKeys();
+    });
+    loadAll();
+  </script>
+</body>
+</html>
+  </script>
+</body>
+</html>
+
+
+function onOpen() {
+  const ui = SpreadsheetApp.getUi();
+  ui.createMenu('Toiminnot')
+    .addItem('Päivitä PowerBI', 'updatePowerBI')
+    .addItem('Päivitä ERP', 'updateERP')
+    .addItem('Päivitä NShift', 'updateNShift')
+    .addSeparator()
+    .addItem('Tee laatutarkastus', 'runQualityCheck')
+    .addItem('Tee raportit', 'runReports')
+    .addItem('Vie toimitetut', 'exportDelivered')
+    .addSeparator()
+    .addItem('Päivitä kaikki', 'runAll')
+    .addItem('Aseta automaatio (täysi)', 'setAutomationFull')
+    .addItem('Aseta automaatio (osittainen)', 'setAutomationPartial')
+    .addToUi();
+}
+
+// Esimerkkifunktioita, joihin valikon napit viittaavat
+function updatePowerBI() {
+  SpreadsheetApp.getActiveSpreadsheet().toast('PowerBI-päivitys käynnistetty...');
+  // Kutsu tracking_runner -moduulin PowerBI-päivitysfunktiota
+  runPowerBIUpdate();
+}
+
+function updateERP() {
+  SpreadsheetApp.getActiveSpreadsheet().toast('ERP-päivitys käynnistetty...');
+  runERPUpdate();
+}
+
+function updateNShift() {
+  SpreadsheetApp.getActiveSpreadsheet().toast('NShift-päivitys käynnistetty...');
+  runNShiftUpdate();
+}
+
+function runQualityCheck() {
+  SpreadsheetApp.getActiveSpreadsheet().toast('Laatutarkastus käynnistetty...');
+  runQualityCheckProcess();
+}
+
+function runReports() {
+  SpreadsheetApp.getActiveSpreadsheet().toast('Raportin tuonti käynnistetty...');
+  generateDeliveryReports();
+}
+
+function exportDelivered() {
+  SpreadsheetApp.getActiveSpreadsheet().toast('Toimitettujen vienti käynnistetty...');
+  exportDeliveredData();
+}
+
+function runAll() {
+  updatePowerBI();
+  updateERP();
+  updateNShift();
+  runQualityCheck();
+  runReports();
+  exportDelivered();
+}
+
+function setAutomationFull() {
+  // Poistaa aiemmat ajastukset ja asettaa uudet kaikki toiminnot ajastettuna
+  deleteAllTriggers();
+  ScriptApp.newTrigger('runAll').timeBased().everyHours(6).create();
+  ScriptApp.newTrigger('runQualityCheck').timeBased().everyHours(1).create();
+  ScriptApp.newTrigger('runReports').timeBased().onWeekDay(ScriptApp.WeekDay.MONDAY).atHour(9).create();
+}
+
+function setAutomationPartial() {
+  // Esim. vain päivittää NShift ja ERP automaattisesti joka yö
+  deleteAllTriggers();
+  ScriptApp.newTrigger('updateERP').timeBased().everyDays(1).atHour(3).create();
+  ScriptApp.newTrigger('updateNShift').timeBased().everyDays(1).atHour(4).create();
+}
+
+// Apufunktio triggerien poistoon
+function deleteAllTriggers() {
+  ScriptApp.getProjectTriggers().forEach(trigger => ScriptApp.deleteTrigger(trigger));
+}
+ui.createMenu('Shipment')
+  .addItem('Credentials Hub', 'showCredentialsHub')     // uusi sivupaneeli
+  // ...
+  .addItem('Näytä edistyminen', 'showProgressSidebar'); // bulk-status
+
+
+function runNShiftUpdate() {
+  const query = 'from:noreply@nshift.com subject:"NShift raportti"';
+  const threads = GmailApp.search(query);
+  if (threads.length === 0) {
+    logError('NShift päivitys', 'NShift-raporttia ei löytynyt Gmailista');
+    return;
+  }
+  // Otetaan uusin viesti ketjusta
+  const message = threads[0].getMessages().pop();
+  const attachments = message.getAttachments();
+  if (attachments.length === 0) {
+    SpreadsheetApp.getActiveSpreadsheet().toast('NShift: Liitteitä ei löytynyt.');
+    return;
+  }
+  // Tallennetaan liitteet Driveen tai käsitellään suoraan
+  attachments.forEach(file => {
+    // Oletetaan Excel-muotoinen raportti, avataan se Sheetsissä
+    const tempFile = DriveApp.createFile(file.copyBlob());
+    const tempSs = SpreadsheetApp.open(tempFile);
+    processNShiftSheet(tempSs);
+    DriveApp.getFileById(tempFile.getId()).setTrashed(true);
+  });
+}
+
+
+function runPowerBIUpdate() {
+  try {
+    const folder = DriveApp.getFolderById(SETTINGS.powerBI.folderId);
+    const files = folder.getFilesByName(SETTINGS.powerBI.fileName);
+    if (!files.hasNext()) throw 'PowerBI-tiedostoa ei löytynyt.';
+    const file = files.next();
+    const ss = SpreadsheetApp.open(file);
+    processPowerBIData(ss);
+  } catch (err) {
+    logError('PowerBI päivitys', err);
+  }
+}
+
+function runERPUpdate() {
+  try {
+    const folder = DriveApp.getFolderById(SETTINGS.erp.folderId);
+    const files = folder.getFilesByName(SETTINGS.erp.fileName);
+    if (!files.hasNext()) throw 'ERP-tiedostoa ei löytynyt.';
+    const file = files.next();
+    const ss = SpreadsheetApp.open(file);
+    processERPData(ss);
+  } catch (err) {
+    logError('ERP päivitys', err);
+  }
+}
+function logHttpError_(carrier, code, where, url, http, status, message, retryAfter){
+  logError_({
+    when: new Date(),
+    carrier: carrier,
+    code: code,
+    where: where,
+    http: http,
+    status: status,
+    message: message,
+    retryAfter: retryAfter,
+    url: url
+  });
+}
+
+/**
+ * Yhdistää PowerBI- ja ERP-taulukot PST-tunnisteen perusteella.
+ * Merkitsee ne rivit, joilta puuttuu ERP-data tai jotka eivät vastaa.
+ */
+function mergeDataByPST(powerBIRange, erpRange) {
+  const pbiData = sanitizeMatrix_(powerBIRange);
+  const erpData = sanitizeMatrix_(erpRange);
+  
+  // Oletetaan, että PST-koodi on sarakkeessa 1.
+  const pbiMap = {};
+  pbiData.forEach(row => {
+    let pst = firstCode_(row[0]);
+    if (pst) pbiMap[pst] = row;
+  });
+  
+  let merged = [];
+  erpData.forEach(row => {
+    let pst = firstCode_(row[0]);
+    let pbiRow = pbiMap[pst] || Array(pbiData[0].length).fill('');
+    merged.push(pbiRow.concat(row));
+    delete pbiMap[pst];
+  });
+  // Jäljelle jääneet PST:t ovat liian paljon -raporteilta
+  Object.values(pbiMap).forEach(pbiRow => {
+    merged.push(pbiRow.concat(Array(erpData[0].length).fill('')));
+  });
+  
+  return merged;
+}
+
+
+function generateDeliveryReports() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SETTINGS.report.sheetName);
+  const data = sanitizeMatrix_(sheet.getDataRange().getValues());
+  const headers = data.shift();
+  const idxCarrier = headers.indexOf('Kuljetusyritys');
+  const idxDeliveryTime = headers.indexOf('Toimitusaika');
+  let report = {};
+  
+  data.forEach(row => {
+    let carrier = canonicalCarrier_(row[idxCarrier]);
+    let time = Number(row[idxDeliveryTime]);
+    if (!report[carrier]) report[carrier] = [];
+    report[carrier].push(time);
+  });
+  
+  // Kirjoita raportti uuteen sheettiin
+  const reportSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SETTINGS.report.outputSheet);
+  reportSheet.clearContents();
+  reportSheet.appendRow(['Kuljetusyritys', 'Keskiarvo', 'Mediaani']);
+  for (let carrier in report) {
+    let times = report[carrier].sort((a,b) => a - b);
+    let avg = (times.reduce((a,b) => a+b, 0) / times.length).toFixed(1);
+    let median = times[Math.floor(times.length/2)];
+    reportSheet.appendRow([carrier, avg, median]);
+  }
+}
+
+/**
+ * Kirjaa virheen erilliseen loki-sheettiin.
+ * @param {string} context - Lyhyt tieto toiminnosta tai vaiheesta.
+ * @param {any} error - Virheilmoitus tai poikkeus.
+ */
+function logError(context, error) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName(SETTINGS.sheets.errorLog);
+  if (!sheet) {
+    sheet = ss.insertSheet(SETTINGS.sheets.errorLog);
+    sheet.appendRow(['Aikaleima', 'Konteksti', 'Virheviesti']);
+  }
+  const time = new Date();
+  const msg = (error && error.toString) ? error.toString() : JSON.stringify(error);
+  sheet.appendRow([time, context, msg]);
+  console.error(`[${time}] ${context}: ${msg}`);
+}
+
+
+/** Credentials Hub – sivupaneeli (lisäosa) **/
+function showCredentialsHub(){ openCredsPanel(); }  // menu kutsuu tätä
+
+function openCredsPanel() {
+  const t = HtmlService.createTemplateFromFile('Creds');
+  t.props = credGetProps();                  // esitäytöt
+  const html = t.evaluate()
+    .setTitle('Integraatioavaimet')
+    .setWidth(760)
+    .setHeight(760);
+  SpreadsheetApp.getUi().showSidebar(html);
+}
+
+function credGetProps() {
+  const sp = PropertiesService.getScriptProperties();
+  const keys = [
+    // Matkahuolto
+    'MH_TRACK_URL','MH_BASIC',
+    // Posti (OAuth + fallback Basic)
+    'POSTI_TOKEN_URL','POSTI_BASIC','POSTI_TRACK_URL',
+    'POSTI_TRK_URL','POSTI_TRK_BASIC','POSTI_TRK_USER','POSTI_TRK_PASS',
+    // GLS FI v2 + OAuth fallback
+    'GLS_FI_TRACK_URL','GLS_FI_API_KEY','GLS_FI_SENDER_ID','GLS_FI_METHOD',
+    'GLS_TOKEN_URL','GLS_BASIC','GLS_TRACK_URL',
+    // DHL
+    'DHL_TRACK_URL','DHL_API_KEY',
+    // Bring
+    'BRING_TRACK_URL','BRING_UID','BRING_KEY','BRING_CLIENT_URL',
+    // Rate/backoff UI:sta säädettävä
+    'BULK_BACKOFF_MINUTES_BASE'
+  ];
+  const obj = {}; keys.forEach(k => obj[k] = sp.getProperty(k) || '');
+  return obj;
+}
+
+function credSaveProps(data) {
+  if (!data || typeof data !== 'object') return { ok:false, msg:'No data' };
+  const sp = PropertiesService.getScriptProperties();
+  Object.keys(data).forEach(k => sp.setProperty(k, String(data[k] ?? '')));
+  return { ok:true };
+}
+
+/** Pikatestaus paneelista (kutsuu omaa TRK_* trackeria) **/
+function credTestTrack(carrier, code) {
+  if (!carrier || !code) return {error:'Anna kuljetusyhtiö ja koodi'};
+  try {
+    // Tämä olettaa että sinulla on TRK_trackByCarrier_(carrier, code)
+    return TRK_trackByCarrier_(carrier, code);
+  } catch (e) {
+    return {error:String(e)};
+  }
+}
+
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <style>
+    body{font:14px/1.35 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;padding:16px}
+    h2{margin:0 0 10px}
+    h3{margin:18px 0 8px;font-size:15px}
+    .grid{display:grid;grid-template-columns:240px 1fr;gap:8px 10px}
+    label{align-self:center;color:#333}
+    input[type="text"],input[type="password"],select,textarea{width:100%;padding:8px;box-sizing:border-box}
+    .muted{color:#777;font-size:12px}
+    .row{margin:16px 0 8px;border-top:1px solid #eee;padding-top:12px}
+    button{padding:9px 14px;margin-right:8px}
+    .ok{color:#0a0}.err{color:#b00}
+    pre{background:#fafafa;border:1px solid #eee;padding:8px;overflow:auto;max-height:200px}
+  </style>
+</head>
+<body>
+  <h2>Integraatioavaimet</h2>
+  <div class="muted">Tallenna kaikki seurannassa käytettävät URLit ja avaimet Script Propertiesiin.</div>
+
+  <h3>Matkahuolto</h3>
+  <div class="grid">
+    <label>MH_TRACK_URL</label><input name="MH_TRACK_URL" type="text">
+    <label>MH_BASIC (Base64 user:pass)</label><input name="MH_BASIC" type="text">
+  </div>
+
+  <h3>Posti</h3>
+  <div class="grid">
+    <label>POSTI_TOKEN_URL</label><input name="POSTI_TOKEN_URL" type="text">
+    <label>POSTI_BASIC (Base64 clientId:secret)</label><input name="POSTI_BASIC" type="text">
+    <label>POSTI_TRACK_URL</label><input name="POSTI_TRACK_URL" type="text">
+
+    <label>POSTI_TRK_URL (fallback Basic)</label><input name="POSTI_TRK_URL" type="text">
+    <label>POSTI_TRK_BASIC (Base64 user:pass)</label><input name="POSTI_TRK_BASIC" type="text">
+    <label>POSTI_TRK_USER (vaihtoehto BASICille)</label><input name="POSTI_TRK_USER" type="text">
+    <label>POSTI_TRK_PASS</label><input name="POSTI_TRK_PASS" type="password">
+  </div>
+
+  <h3>GLS Finland v2 (x-api-key)</h3>
+  <div class="grid">
+    <label>GLS_FI_TRACK_URL</label><input name="GLS_FI_TRACK_URL" type="text" placeholder="./get_tracking_events?senderId={{sender}}&parcelNo={{code}}">
+    <label>GLS_FI_API_KEY</label><input name="GLS_FI_API_KEY" type="password" placeholder="x-api-key">
+    <label>GLS_FI_SENDER_ID (valinnainen)</label><input name="GLS_FI_SENDER_ID" type="text">
+    <label>GLS_FI_METHOD</label>
+    <select name="GLS_FI_METHOD">
+      <option>GET</option>
+      <option>POST</option>
+    </select>
+  </div>
+
+  <h3>GLS (OAuth fallback)</h3>
+  <div class="grid">
+    <label>GLS_TOKEN_URL</label><input name="GLS_TOKEN_URL" type="text">
+    <label>GLS_BASIC (Base64 clientId:secret)</label><input name="GLS_BASIC" type="text">
+    <label>GLS_TRACK_URL</label><input name="GLS_TRACK_URL" type="text">
+  </div>
+
+  <h3>DHL</h3>
+  <div class="grid">
+    <label>DHL_TRACK_URL</label><input name="DHL_TRACK_URL" type="text">
+    <label>DHL_API_KEY</label><input name="DHL_API_KEY" type="password">
+  </div>
+
+  <h3>Bring</h3>
+  <div class="grid">
+    <label>BRING_TRACK_URL</label><input name="BRING_TRACK_URL" type="text">
+    <label>BRING_UID</label><input name="BRING_UID" type="text">
+    <label>BRING_KEY</label><input name="BRING_KEY" type="password">
+    <label>BRING_CLIENT_URL</label><input name="BRING_CLIENT_URL" type="text">
+  </div>
+
+  <h3>Bulk/backoff</h3>
+  <div class="grid">
+    <label>BULK_BACKOFF_MINUTES_BASE</label><input name="BULK_BACKOFF_MINUTES_BASE" type="text" placeholder="esim. 30">
+  </div>
+
+  <div class="row">
+    <button id="save">Tallenna asetukset</button>
+    <button id="flush">Tyhjennä seurannan välimuisti</button>
+    <span id="msg" class="muted"></span>
+  </div>
+
+  <div class="row">
+    <h3 style="margin:0">Pikatestaus</h3>
+    <div class="grid">
+      <label>Carrier</label>
+      <select id="tCarrier">
+        <option>posti</option>
+        <option>gls</option>
+        <option>gls_fi</option>
+        <option>mh</option>
+        <option>bring</option>
+        <option>dhl</option>
+      </select>
+      <label>Koodi</label><input id="tCode" type="text" placeholder="esim. seurantakoodi">
+    </div>
+    <div class="muted" id="tMsg">–</div>
+    <pre id="tOut" style="display:none"></pre>
+    <button id="test">Testaa seuranta</button>
+  </div>
+
+  <script>
+    // Esitäytöt
+    (function init(){
+      const props = <?= JSON.stringify(props) ?> || {};
+      for (const [k,v] of Object.entries(props)){
+        const el = document.querySelector(`[name="${k}"]`);
+        if (el) el.value = v || '';
+      }
+    })();
+
+    // Tallennus
+    document.getElementById('save').addEventListener('click', () => {
+      const data = {};
+      [...document.querySelectorAll('input[name],select[name]')].forEach(el => data[el.name] = el.value);
+      const msg = document.getElementById('msg');
+      msg.textContent = 'Tallennetaan…'; msg.className = 'muted';
+      google.script.run.withSuccessHandler(r => {
+        msg.textContent = (r && r.ok) ? 'Tallennettu.' : (r && r.msg || 'Virhe');
+        msg.className = (r && r.ok) ? 'ok' : 'err';
+      }).credSaveProps(data);
+    });
+
+    // Välimuisti (kutsuu valmisfunktiota)
+    document.getElementById('flush').addEventListener('click', () => {
+      const msg = document.getElementById('msg');
+      msg.textContent = 'Tyhjennetään välimuisti…';
+      google.script.run.withSuccessHandler(() => {
+        msg.textContent = 'Välimuisti tyhjennetty.'; msg.className = 'ok';
+      }).trkClearCache();
+    });
+
+    // Testaa seuranta
+    document.getElementById('test').addEventListener('click', () => {
+      const carrier = document.getElementById('tCarrier').value;
+      const code = document.getElementById('tCode').value.trim();
+      const tMsg = document.getElementById('tMsg');
+      const tOut = document.getElementById('tOut');
+      tMsg.textContent = 'Haetaan…'; tOut.style.display='none'; tOut.textContent='';
+      google.script.run.withSuccessHandler(res => {
+        if (!res || res.error){ tMsg.textContent = res && res.error ? res.error : 'Virhe'; tMsg.className='err'; return; }
+        tMsg.className='muted';
+        tMsg.textContent = (res.found ? 'OK' : (res.status || 'NO_DATA')) +
+          (res.time ? ' @ '+res.time : '') + (res.location ? ' ('+res.location+')' : '');
+        tOut.textContent = (res.raw || JSON.stringify(res, null, 2)).slice(0, 2000);
+        tOut.style.display='block';
+      }).credTestTrack(carrier, code);
+    });
+  </script>
+</body>
+</html>
+
+
+function myFunction() {
+  
+}
+/** 
+ * Script Properties -hallinta (Google Apps Script)
+ * Lisää valikkoon napin, jolla voit "ajaa kaikki arvot" Script Properties -asetuksiin.
+ * Voit lukea arvot joko tästä tiedostosta (INLINE_PROPS) tai taulukosta (SHEET).
+ *
+ * Ohje:
+ * 1) Avaa Google Sheets -> Laajennukset -> Apps Script. Luo kaksi tiedostoa:
+ *    - Code.gs (liitä tähän alla oleva Code.gs -osa)
+ *    - Sidebar.html (liitä tähän alla oleva Sidebar.html -osa)
+ * 2) Jos käytät taulukkoa, tee välilehti nimellä SHEET_NAME (oletus 'Script_Properties')
+ *    ja laita otsikot soluihin A1='key', B1='value'. Avaimet sarakkeessa A ja arvot sarakkeessa B.
+ * 3) Päivitä CONFIG.SOURCE arvoon 'SHEET' tai 'INLINE' tarpeen mukaan.
+ * 4) Päivitä halutessasi suodatukset (skipEmpty/skipZero/clearMissing) CONFIGissa tai sivupaneelissa.
+ * 5) Lataa Taulukko -> Päivitä sivu -> Valikosta "Asetukset" -> "Avaa asetuspaneeli…" tai "Aja kaikki arvot (oletusasetuksin)".
+ */
+// ===== Code.gs =====
+
+const CONFIG = Object.freeze({
+  SOURCE: 'SHEET',           // 'SHEET' tai 'INLINE'
+  SHEET_NAME: 'Script_Properties',
+  KEY_HEADER: 'key',
+  VALUE_HEADER: 'value',
+  // Oletuskäyttäytyminen (voi muuttaa sivupaneelista)
+  SKIP_EMPTY_VALUES: true,   // ohita tyhjät arvot
+  SKIP_ZERO_VALUES: true,    // ohita merkkijono '0'
+  CLEAR_MISSING_KEYS: false, // poista Script Properties -avaimet joita ei ole lähdedatassa
+  DRY_RUN_DEFAULT: false     // tee koeajo (ei kirjoita mitään) oletuksena valikosta
+});
+
+// Tässä on sisäänleivottu versio (INLINE) CSV:stä—herkät arvot on korvattu '__REDACTED__'.
+const INLINE_PROPS = {
+    "ACTION_SHEET": "Vaatii_toimenpiteitä",
+    "ARCHIVE_SHEET": "Packages_Archive",
+    "AUTO_SCAN_ORDER": "posti,gls,matkahuolto,dhl,bring",
+    "BRING_CLIENT_ID": "__REDACTED__",
+    "BRING_CLIENT_SECRET": "__REDACTED__",
+    "BRING_CLIENT_URL": "https://omaappisi.fi",
+    "BRING_LABEL_PRODUCT": "SERVICEPAKETTI",
+    "BRING_TESTING": "false",
+    "BRING_TRACKING_URL": "https://api.bring.com/tracking/api/v2/tracking.json?q=",
+    "DHL_ACCOUNT_NUMBER": "__REDACTED__",
+    "DHL_API_KEY": "__REDACTED__",
+    "DHL_LABEL_PRODUCT": "PICKUP",
+    "DHL_TESTING": "false",
+    "DHL_TRACKING_URL": "https://mydhl.express.dhl/fi/fi/tracking.html?AWB=",
+    "GLS_API_KEY": "__REDACTED__",
+    "GLS_LABEL_PRODUCT": "FLEXDELIVERY",
+    "GLS_TESTING": "false",
+    "GLS_TRACKING_URL": "https://gls-group.com/fi/fi/seuranta?match=",
+    "IMPORT_DIR": "Import",
+    "INBOX_SHEET": "Inbox",
+    "JSON_EXPORT_DIR": "Json_Export",
+    "LOG_SHEET": "Log",
+    "MATKAHOULTO_LABEL_PRODUCT": "XXL",
+    "MATKAHOULTO_TESTING": "false",
+    "MATKAHOULTO_TRACKING_URL": "https://www.matkahuolto.fi/seuraa-lahetysta?shipmentId=",
+    "MH_SENDER_CODE": "__REDACTED__",
+    "ORDERS_DIR": "Orders",
+    "ORDERS_SHEET": "Orders",
+    "ORDER_ARCHIVE_SHEET": "Orders_Archive",
+    "ORDER_CSV_DELIMITER": ";",
+    "ORDER_CSV_DIR": "Order_CSV",
+    "ORDER_CSV_HAS_HEADERS": "true",
+    "ORDER_IMPORT_SHEET": "Order_Import",
+    "PICKED_UP_SHEET": "Picked_Up",
+    "POSTI_API_KEY": "__REDACTED__",
+    "POSTI_LABEL_PRODUCT": "XXS",
+    "POSTI_TESTING": "false",
+    "POSTI_TRACKING_URL": "https://www.posti.fi/fi/seuranta?itemId=",
+    "SCRIPTS_DIR": "Scripts",
+    "SETTINGS_SHEET": "Asetukset",
+    "SHEET_ARCHIVE_ENABLED": "true",
+    "SHEET_LANGUAGE": "fi",
+    "SHEET_TIMEZONE": "Europe/Helsinki",
+    "STATUS_CANCELLED": "Peruttu",
+    "STATUS_CREATED": "Luotu",
+    "STATUS_FAILED": "Epäonnistui",
+    "STATUS_LABEL_CREATED": "Odottaa noutoa",
+    "STATUS_PICKED_UP": "Noudettu",
+    "STATUS_READY": "Valmis",
+    "STATUS_SCANNED": "Skannattu",
+    "STATUS_SHIPPED": "Lähetetty",
+    "TASKS_DIR": "Tasks",
+    "TMP_DIR": "Tmp",
+    "TRACKING_SHEET": "Tracking",
+    "UI_AUTO_IMPORT": "true",
+    "UI_AUTO_PRINT": "false",
+    "UI_DARK_MODE": "false",
+    "UI_DEFAULT_CARRIER": "posti",
+    "UI_LANGUAGE": "fi",
+    "UI_ROWS_PER_PAGE": "50",
+    "UI_SHOW_ADVANCED": "false",
+    "UI_SOUND": "true",
+    "USE_ARCHIVE": "true",
+    "WORKSPACE": "Rikun kuljetus"
+};
+
+function onOpen() {
+  const ui = SpreadsheetApp.getUi();
+  ui.createMenu('Asetukset')
+    .addItem('Avaa asetuspaneeli…', 'showSidebar')
+    .addSeparator()
+    .addItem('Aja kaikki arvot (oletusasetuksin)', 'applyAllWithDefaults')
+    .addSeparator()
+    .addItem('Näytä nykyiset arvot (konsoliin)', 'logCurrentProperties')
+    .addToUi();
+}
+
+function showSidebar() {
+  const html = HtmlService.createHtmlOutputFromFile('Sidebar')
+    .setTitle('Script Properties');
+  SpreadsheetApp.getUi().showSidebar(html);
+}
+
+function getDefaultOptions() {
+  return {
+    skipEmpty: CONFIG.SKIP_EMPTY_VALUES,
+    skipZero: CONFIG.SKIP_ZERO_VALUES,
+    clearMissing: CONFIG.CLEAR_MISSING_KEYS,
+    dryRun: CONFIG.DRY_RUN_DEFAULT,
+    source: CONFIG.SOURCE, // 'SHEET' | 'INLINE'
+  };
+}
+
+function applyAllWithDefaults() {
+  const res = applyProperties(getDefaultOptions());
+  SpreadsheetApp.getUi().alert(formatResultMessage(res));
+}
+
+function logCurrentProperties() {
+  const current = PropertiesService.getScriptProperties().getProperties();
+  console.log('Nykyiset Script Properties:', JSON.stringify(current, null, 2));
+}
+
+function applyProperties(options) {
+  options = options || getDefaultOptions();
+  const src = (options.source || 'SHEET').toUpperCase();
+
+  // 1) Lue lähdedata
+  let rows;
+  if (src === 'INLINE') {
+    rows = objectToRows(INLINE_PROPS);
+  } else {
+    rows = readSheetRows(CONFIG.SHEET_NAME, CONFIG.KEY_HEADER, CONFIG.VALUE_HEADER);
+  }
+  const summary = { totalRows: rows.length };
+
+  // 2) Suodata
+  const filtered = [];
+  let skippedEmpty = 0, skippedZero = 0;
+  rows.forEach(r => {
+    const key = String(r.key || '').trim();
+    const value = String(r.value || '').trim();
+    if (options.skipEmpty && value === '') { skippedEmpty++; return; }
+    if (options.skipZero && value === '0') { skippedZero++; return; }
+    if (key === '') return; // ohita tyhjät avaimet
+    filtered.push({ key, value });
+  });
+  summary.afterFilters = filtered.length;
+  summary.skippedEmpty = skippedEmpty;
+  summary.skippedZero = skippedZero;
+
+  // 3) Muodosta objekti
+  const propsObj = rowsToObject(filtered);
+
+  // 4) Kirjoita Script Properties (tai ei, jos dry run)
+  const props = PropertiesService.getScriptProperties();
+  const before = props.getProperties();
+  let cleared = 0;
+  if (options.dryRun) {
+    return {
+      wrote: 0,
+      cleared,
+      summary,
+      preview: propsObj,
+      dryRun: true,
+      source: src,
+    };
+  }
+
+  if (options.clearMissing) {
+    // setProperties(properties, deleteAllOthers)
+    props.setProperties(propsObj, true);
+    // Kun deleteAllOthers=true, Apps Script poistaa muut avaimet automaattisesti.
+    cleared = Math.max(Object.keys(before).length - Object.keys(propsObj).length, 0);
+  } else {
+    props.setProperties(propsObj, false);
+  }
+
+  const wrote = Object.keys(propsObj).length;
+  return {
+    wrote,
+    cleared,
+    summary,
+    source: src,
+    dryRun: false,
+  };
+}
+
+function formatResultMessage(res) {
+  const lines = [];
+  lines.push(`Lähde: ${res.source}`);
+  if (res.dryRun) lines.push('KOEAJO: Ei kirjoitettu mitään.');
+  lines.push(`Rivejä lähteessä: ${res.summary.totalRows}`);
+  lines.push(`Suodatuksen jälkeen: ${res.summary.afterFilters}`);
+  if (res.summary.skippedEmpty) lines.push(`Ohitetut tyhjät: ${res.summary.skippedEmpty}`);
+  if (res.summary.skippedZero) lines.push(`Ohitetut nolla-arvot: ${res.summary.skippedZero}`);
+  if (!res.dryRun) lines.push(`Kirjoitettu Script Properties -avaimia: ${res.wrote}`);
+  if (!res.dryRun && res.cleared) lines.push(`Poistettu puuttuvia avaimia: ${res.cleared}`);
+  return lines.join('\n');
+}
+
+function readSheetRows(sheetName, keyHeader, valueHeader) {
+  const ss = SpreadsheetApp.getActive();
+  if (!ss) throw new Error('Ei aktiivista taulukkoa.');
+  const sh = ss.getSheetByName(sheetName) || ss.getSheets()[0];
+  const data = sh.getDataRange().getValues();
+  if (!data.length) return [];
+
+  // Etsi otsikot ensimmäiseltä riviltä
+  const headers = data[0].map(h => String(h).trim().toLowerCase());
+  const keyIdx = headers.indexOf(String(keyHeader).toLowerCase());
+  const valIdx = headers.indexOf(String(valueHeader).toLowerCase());
+  if (keyIdx < 0 || valIdx < 0) {
+    throw new Error(`Otsikoita ei löytynyt. Tarkista että A1='{{keyHeader}}' ja B1='{{valueHeader}}'.`);
+  }
+
+  const rows = [];
+  for (let i = 1; i < data.length; i++) {
+    const row = data[i];
+    const key = String(row[keyIdx] ?? '').trim();
+    const value = String(row[valIdx] ?? '').trim();
+    if (key === '' && value === '') continue; // ohita täysin tyhjät
+    rows.push({ key, value });
+  }
+  return rows;
+}
+
+function rowsToObject(rows) {
+  const out = {};
+  rows.forEach(r => { out[r.key] = r.value; });
+  return out;
+}
+
+function objectToRows(obj) {
+  return Object.keys(obj || {}).map(k => ({ key: k, value: String(obj[k] ?? '') }));
+}
+
+<!-- ===== Sidebar.html ===== -->
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <base target="_top">
+    <style>
+      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; padding: 12px; }
+      .row { margin: 10px 0; }
+      label { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+      button { padding: 10px 14px; border: 0; border-radius: 10px; box-shadow: 0 1px 3px rgba(0,0,0,.1); cursor: pointer; }
+      .primary { background: #1a73e8; color: white; }
+      .muted { color: #555; }
+      .grid { display: grid; grid-template-columns: 1fr; gap: 8px; }
+      .status { white-space: pre-wrap; background: #f7f7f7; border-radius: 8px; padding: 8px; margin-top: 10px; }
+      .card { border: 1px solid #eee; border-radius: 12px; padding: 12px; }
+    </style>
+  </head>
+  <body>
+    <h2>Script Properties</h2>
+    <div class="card grid">
+      <div class="row">
+        <label><input type="radio" name="source" value="SHEET" checked> Lähde: Sheet (SHEET_NAME)</label>
+        <label><input type="radio" name="source" value="INLINE"> Lähde: Koodin INLINE_PROPS</label>
+      </div>
+      <div class="row">
+        <label><input type="checkbox" id="skipEmpty" checked> Ohita tyhjät arvot</label>
+        <label><input type="checkbox" id="skipZero" checked> Ohita nolla-arvot ("0")</label>
+        <label><input type="checkbox" id="clearMissing"> Poista avaimet joita ei ole lähteessä</label>
+        <label><input type="checkbox" id="dryRun"> Koeajo (älä kirjoita)</label>
+      </div>
+      <div class="row">
+        <button class="primary" id="runBtn">Aja kaikki arvot</button>
+      </div>
+    </div>
+
+    <div class="status" id="status"></div>
+
+    <script>
+      document.getElementById('runBtn').addEventListener('click', () => {
+        const source = [...document.querySelectorAll('input[name="source"]')].find(r => r.checked)?.value || 'SHEET';
+        const opts = {
+          source,
+          skipEmpty: document.getElementById('skipEmpty').checked,
+          skipZero: document.getElementById('skipZero').checked,
+          clearMissing: document.getElementById('clearMissing').checked,
+          dryRun: document.getElementById('dryRun').checked,
+        };
+        const btn = document.getElementById('runBtn');
+        btn.disabled = true;
+        btn.textContent = 'Suoritetaan…';
+        document.getElementById('status').textContent = 'Ajettu käyntiin...';
+
+        google.script.run
+          .withSuccessHandler(res => {
+            btn.disabled = false;
+            btn.textContent = 'Aja kaikki arvot';
+            document.getElementById('status').textContent = format(res);
+          })
+          .withFailureHandler(err => {
+            btn.disabled = false;
+            btn.textContent = 'Aja kaikki arvot';
+            document.getElementById('status').textContent = 'Virhe: ' + (err && err.message ? err.message : err);
+          })
+          .applyProperties(opts);
+      });
+
+      function format(res) {
+        if (!res) return 'Ei tulosta.';
+        const lines = [];
+        lines.push('Lähde: ' + res.source);
+        if (res.dryRun) lines.push('KOEAJO: Ei kirjoitettu mitään.');
+        if (res.summary) {
+          lines.push('Rivejä lähteessä: ' + res.summary.totalRows);
+          lines.push('Suodatuksen jälkeen: ' + res.summary.afterFilters);
+          if (res.summary.skippedEmpty) lines.push('Ohitetut tyhjät: ' + res.summary.skippedEmpty);
+          if (res.summary.skippedZero) lines.push('Ohitetut nolla-arvot: ' + res.summary.skippedZero);
+        }
+        if (!res.dryRun) {
+          lines.push('Kirjoitettu Script Properties -avaimia: ' + res.wrote);
+          if (res.cleared) lines.push('Poistettu puuttuvia avaimia: ' + res.cleared);
+        }
+        return lines.join('\n');
+      }
+    </script>
+  </body>
+</html>
+
+
+/**
+ * PATCH 01 — Kaukokiito + korjaukset (Ralli Logistics)
+ * ----------------------------------------------------
+ * Tämä tiedosto on DROP-IN -päivitys aiempaan "Shipment Tracking Toolkit" -projektiisi.
+ * Liitä tämä samaan Apps Script -projektiin uutena .gs-tiedostona (esim. "patch_kaukokiito.gs").
+ *
+ * SISÄLTÖ:
+ *  - canonicalCarrier_(): lisätty Kaukokiito
+ *  - parseDateFlexible_(): korjattu dd.MM.yyyy HH:mm -tulkinta
+ *  - TRK_trackKaukokiito(): uusi seurantafunktio (API tai HTML fallback)
+ *  - TRK_trackByCarrier_(): reititys päivitetty tunnistamaan Kaukokiito
+ *  - readMissingProps_(): lisätty KAUKO_* avaimet tarkistuksiin
+ *  - seedKnownAccountsAndKeys(): lisätty KAUKO_TRACK_URL oletus
+ *  - Valikkoon: menuRefreshCarrier_KAUKO()
+ *
+ * HUOM:
+ *  - Tämä tiedosto KORVAA projektissasi samannimiset funktiot (canonicalCarrier_, parseDateFlexible_,
+ *    TRK_trackByCarrier_, readMissingProps_, seedKnownAccountsAndKeys). Poista vanhat tai anna tämän
+ *    olla viimeisenä tiedostolistassa, jolloin uudempi määritelmä varjostaa vanhan.
+ *  - DELIVERED_KEYWORDS ja muut helperit tulevat aiemmasta paketistasi — älä duplikoi niitä.
+ */
+
+/********************* CARRIER-NORMALISOINTI **********************/
+function canonicalCarrier_(s){
+  const c = String(s||'').toLowerCase();
+  if (/kaukokiito|kki/.test(c)) return 'kaukokiito';
+  if (/posti/.test(c)) return 'posti';
+  if (/gls/.test(c)) return 'gls';
+  if (/dhl/.test(c)) return 'dhl';
+  if (/bring/.test(c)) return 'bring';
+  if (/matkahuolto|mh/.test(c)) return 'matkahuolto';
+  return 'other';
+}
+
+/********************* PÄIVÄYKSEN JOUSTAVA TULKINTA **************/
+function parseDateFlexible_(val){
+  if (!val) return null;
+  if (val instanceof Date && !isNaN(val)) return val;
+  let s = String(val);
+  // ISO tai RFC
+  let d = new Date(s);
+  if (!isNaN(d)) return d;
+  // dd.MM.yyyy [HH:mm[:ss]]
+  const m = s.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
+  if (m){
+    const dd = m[1].padStart(2,'0');
+    const MM = m[2].padStart(2,'0');
+    const yyyy = m[3];
+    const hh = (m[4]||'00').padStart(2,'0');
+    const mi = (m[5]||'00').padStart(2,'0');
+    const ss = (m[6]||'00').padStart(2,'0');
+    d = new Date(`${yyyy}-${MM}-${dd}T${hh}:${mi}:${ss}`);
+    if (!isNaN(d)) return d;
+  }
+  // yyyy-MM-dd HH:mm:ss
+  const m2 = s.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?$/);
+  if (m2){
+    d = new Date(`${m2[1]}-${m2[2]}-${m2[3]}T${m2[4]}:${m2[5]}:${m2[6]||'00'}`);
+    if (!isNaN(d)) return d;
+  }
+  return null;
+}
+
+/********************* KAUKOKIITO TRACKING ************************
+ * Tuki kahdelle moodille:
+ *  A) API (JSON): aseta Script Properties:
+ *     - KAUKO_TRACK_URL   esim. https://api.kaukokiito.example/track?code={{code}}
+ *     - KAUKO_API_KEY     (vaihtoehtoisesti KAUKO_BASIC = Base64("user:pass"))
+ *  B) HTML fallback (kevyt): aseta
+ *     - KAUKO_SCRAPE_URL  esim. https://www.kaukokiito.fi/seuranta/{{code}}
+ *
+ * Palauttaa {carrier, found, status, time, location, raw, [retryAfter]}
+ ******************************************************************/
+function TRK_trackKaukokiito(code){
+  const carrierName = 'Kaukokiito';
+  const sp = PropertiesService.getScriptProperties();
+  const url = (sp.getProperty('KAUKO_TRACK_URL') || '').replace('{{code}}', encodeURIComponent(code));
+  const apiKey = sp.getProperty('KAUKO_API_KEY') || '';
+  const basic  = sp.getProperty('KAUKO_BASIC') || '';
+  const scrapeUrl = (sp.getProperty('KAUKO_SCRAPE_URL') || '').replace('{{code}}', encodeURIComponent(code));
+
+  if (!url && !scrapeUrl){
+    return { carrier: carrierName, status: 'MISSING_CREDENTIALS' };
+  }
+
+  if (url){
+    // JSON API -kutsu
+    const headers = { 'Accept':'application/json' };
+    if (apiKey) headers['x-api-key'] = apiKey;
+    if (basic) headers['Authorization'] = 'Basic ' + basic;
+    const res = TRK_safeFetch_(url, { method:'get', headers, muteHttpExceptions:true });
+    if (!res.ok){
+      if (res.code === 429){
+        autoTuneRateLimitOn429_('KAUKO', 200, 2000);
+        logHttpError_(carrierName, code, 'TRK_trackKaukokiito', url, res.code, 'RATE_LIMIT_429', res.text, res.retryAfter);
+        return { carrier: carrierName, status:'RATE_LIMIT_429', raw:String(res.text||'').slice(0,1000), retryAfter: res.retryAfter };
+      }
+      if (res.code === 404) return { carrier: carrierName, status:'NOT_FOUND' };
+      logHttpError_(carrierName, code, 'TRK_trackKaukokiito', url, res.code, res.status, res.text, null);
+      return { carrier: carrierName, status: res.status || 'HTTP_'+res.code, raw: String(res.text||'').slice(0,1000) };
+    }
+    try{
+      const data = JSON.parse(res.text);
+      const latest = kk_pickLatestEventFromUnknownJson_(data);
+      if (!latest) return { carrier: carrierName, found:true, status:'IN_TRANSIT', time:'', location:'', raw:'' };
+      return {
+        carrier: carrierName,
+        found: true,
+        status: latest.status || latest.description || latest.text || '',
+        time: latest.time ? fmtDateTime_(latest.time) : '',
+        location: latest.location || latest.city || latest.postalCode || '',
+        raw: ''
+      };
+    } catch(e){
+      // JSON parse epäonnistui → yritä HTML fallbackia jos asetettu
+    }
+  }
+
+  if (scrapeUrl){
+    // HTML fallback: etsi "delivered/toimitettu/luovutettu" tai viimeinen tapahtuma
+    const res = TRK_safeFetch_(scrapeUrl, { method:'get', headers:{ 'Accept':'text/html' }, muteHttpExceptions:true });
+    if (!res.ok){
+      if (res.code === 429){
+        autoTuneRateLimitOn429_('KAUKO', 200, 2000);
+        logHttpError_(carrierName, code, 'TRK_trackKaukokiito_scrape', scrapeUrl, res.code, 'RATE_LIMIT_429', res.text, res.retryAfter);
+        return { carrier: carrierName, status:'RATE_LIMIT_429', raw:String(res.text||'').slice(0,1000), retryAfter: res.retryAfter };
+      }
+      if (res.code === 404) return { carrier: carrierName, status:'NOT_FOUND' };
+      logHttpError_(carrierName, code, 'TRK_trackKaukokiito_scrape', scrapeUrl, res.code, res.status, res.text, null);
+      return { carrier: carrierName, status: res.status || 'HTTP_'+res.code, raw: String(res.text||'').slice(0,1000) };
+    }
+    const html = String(res.text||'');
+    // Poimi aikaleima (yyyy-mm-dd hh:mm tai dd.mm.yyyy hh:mm)
+    const reIso = /(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(?::\d{2})?)/g;
+    const reFi  = /(\d{1,2}\.\d{1,2}\.\d{4}[ T]\d{1,2}:\d{2}(?::\d{2})?)/g;
+    const times = [];
+    let m;
+    while ((m = reIso.exec(html)) !== null){ times.push(parseDateFlexible_(m[1])); }
+    while ((m = reFi.exec(html))  !== null){ times.push(parseDateFlexible_(m[1])); }
+    const bestTime = times.filter(Boolean).sort((a,b)=>b-a)[0] || '';
+    const lowered = html.toLowerCase();
+    const delivered = (typeof DELIVERED_KEYWORDS !== 'undefined') && DELIVERED_KEYWORDS.some(w => lowered.includes(String(w).toLowerCase()));
+    const status = delivered ? 'DELIVERED' : (bestTime ? 'IN_TRANSIT' : 'NOT_FOUND');
+    return {
+      carrier: carrierName,
+      found: status !== 'NOT_FOUND',
+      status: status,
+      time: bestTime ? fmtDateTime_(bestTime) : '',
+      location: '',
+      raw: ''
+    };
+  }
+
+  return { carrier: carrierName, status: 'NOT_FOUND' };
+}
+
+// Heuristiikka: etsi JSONista "event"-taulut ja poimi uusin aikaleiman perusteella
+function kk_pickLatestEventFromUnknownJson_(obj){
+  let best = null;
+  function visit(node){
+    if (!node) return;
+    if (Array.isArray(node)){
+      node.forEach(visit);
+    } else if (typeof node === 'object'){
+      // jos näyttää eventiltä
+      const keys = Object.keys(node).map(k=>k.toLowerCase());
+      const hasStatus = keys.some(k=>/status|description|eventname|text/.test(k));
+      const timeKey = keys.find(k=>/time|timestamp|date/.test(k));
+      if (hasStatus && timeKey){
+        const t = parseDateFlexible_(node[timeKey]);
+        if (t && (!best || t > best.time)){
+          best = {
+            status: String(node.status || node.description || node.eventName || node.text || ''),
+            time: t,
+            location: String(node.location || node.city || node.postalCode || node.locationCode || '')
+          };
+        }
+      }
+      for (var k in node){ if (node.hasOwnProperty(k)) visit(node[k]); }
+    }
+  }
+  visit(obj);
+  return best;
+}
+
+/********************* REITITYS: lisää Kaukokiito *****************/
+function TRK_trackByCarrier_(carrier, code){
+  const c = String(carrier||'').toLowerCase();
+  try {
+    if (c.includes('kaukokiito') || c.includes('kki')){
+      return TRK_trackKaukokiito(code);
+    } else if (c.includes('matkahuolto') || c.includes('mh')){
+      return TRK_trackMatkahuolto(code);
+    } else if (c.includes('posti') || c.includes('posti.fi') || c.includes('itella')){
+      return TRK_trackPosti(code);
+    } else if (c.includes('gls')){
+      return TRK_trackGLS(code);
+    } else if (c.includes('dhl')){
+      return TRK_trackDHL(code);
+    } else if (c.includes('bring')){
+      return TRK_trackBring(code);
+    } else {
+      return { carrier: carrier, status: 'UNKNOWN_CARRIER' };
+    }
+  } catch(e){
+    const msg = String(e && e.message ? e.message : e);
+    if (/MISSING_CREDENTIALS/.test(msg)) {
+      return { carrier: carrier, status: 'MISSING_CREDENTIALS' };
+    } else if (/NOT_FOUND/.test(msg) || /NO_DATA/.test(msg)) {
+      return { carrier: carrier, status: 'NOT_FOUND' };
+    } else if (/RATE_LIMIT_429/.test(msg)){
+      return { carrier: carrier, status: 'RATE_LIMIT_429' };
+    } else {
+      return { carrier: carrier, status: 'ERROR', error: msg };
+    }
+  }
+}
+
+/********************* PROPS: lisää KAUKO-avaimet *****************/
+function readMissingProps_(){
+  const sp = PropertiesService.getScriptProperties();
+  const have = sp.getProperties();
+  const mustKeys = [
+    // Matkahuolto
+    'MH_TRACK_URL','MH_BASIC',
+    // Posti
+    'POSTI_TOKEN_URL','POSTI_BASIC','POSTI_TRACK_URL',
+    // (tuki myös vanhoille nimille jos käytössä)
+    // GLS (joko FI tai OAuth fallback)
+    'GLS_TOKEN_URL','GLS_BASIC','GLS_TRACK_URL',
+    'GLS_FI_TRACK_URL','GLS_FI_API_KEY',
+    // DHL
+    'DHL_API_KEY','DHL_TRACK_URL',
+    // Bring
+    'BRING_TRACK_URL','BRING_UID','BRING_KEY','BRING_CLIENT_URL',
+    // Kaukokiito (vähintään toinen: API tai SCRAPE)
+    'KAUKO_TRACK_URL',  // jos käytät virallista APIa
+    // throttlaus-konfig
+    'BULK_BACKOFF_MINUTES_BASE'
+  ];
+  const optionalKeys = [
+    'POSTI_TRK_URL','POSTI_TRK_BASIC','POSTI_TRK_USER','POSTI_TRK_PASS',
+    'GLS_FI_SENDER_ID','GLS_FI_SENDER_IDS','GLS_FI_METHOD',
+    'RATE_MINMS_DHL','RATE_MINMS_GLS','RATE_MINMS_POSTI',
+    'KAUKO_API_KEY','KAUKO_BASIC','KAUKO_SCRAPE_URL'
+  ];
+  return {
+    missingMust: mustKeys.filter(k => !have[k]),
+    missingOpt:  optionalKeys.filter(k => !have[k])
+  };
+}
+
+function seedKnownAccountsAndKeys(){
+  const defaults = {
+    MH_TRACK_URL:     'https://extservices.matkahuolto.fi/mpaketti/public/tracking?ids={{code}}',
+    POSTI_TOKEN_URL:  'https://oauth2.posti.com/oauth/token',
+    POSTI_TRACK_URL:  'https://api.posti.fi/tracking/7/shipments/trackingnumbers/{{code}}',
+    GLS_TOKEN_URL:    'https://api.gls-group.net/oauth2/v2/token',
+    GLS_TRACK_URL:    'https://api.gls-group.net/track-and-trace-v1/tracking/simple/references/{{code}}',
+    DHL_TRACK_URL:    'https://api-eu.dhl.com/track/shipments?trackingNumber={{code}}',
+    BRING_TRACK_URL:  'https://api.bring.com/tracking/api/v2/tracking.json?q={{code}}',
+    KAUKO_TRACK_URL:  'https://api.kaukokiito.example/track?code={{code}}', // VAIHDA OIKEAAN
+    BULK_BACKOFF_MINUTES_BASE: '5'
+  };
+  const sp = PropertiesService.getScriptProperties();
+  Object.entries(defaults).forEach(function([k,v]){
+    if (!sp.getProperty(k)) sp.setProperty(k, String(v));
+  });
+  SpreadsheetApp.getActive().toast('Oletusavaimet asetettu (sis. KAUKO_TRACK_URL placeholderin)');
+}
+
+/********************* VALIKKO: Kaukokiito ************************/
+function menuRefreshCarrier_KAUKO(){
+  refreshStatuses_Filtered(getActiveSheetName_(), ['kaukokiito','kki'], false);
+}
+

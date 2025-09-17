@@ -1,0 +1,46 @@
+
+/** 05_kaukokiito_manual.gs — manual input path **/
+
+function kkOpenPasteSheet(){
+  const ss = SpreadsheetApp.getActive();
+  let sh = ss.getSheetByName(KK_PASTE_SHEET);
+  if (!sh) sh = ss.insertSheet(KK_PASTE_SHEET);
+  if (sh.getLastRow() < 1) sh.getRange(1,1,1,4).setValues([['Code','Status','Time','Location']]);
+  ss.setActiveSheet(sh);
+  SpreadsheetApp.getUi().alert('Liitä Kaukokiito-tapahtumat sarakkeisiin A:D ja valitse "Sovella KK_Paste → aktiiviseen tauluun".');
+}
+
+function kkApplyToActive(){
+  const ss = SpreadsheetApp.getActive();
+  const shPaste = ss.getSheetByName(KK_PASTE_SHEET);
+  const sh = ss.getActiveSheet();
+  if (!shPaste || sh.getName()===KK_PASTE_SHEET){ SpreadsheetApp.getUi().alert('Avaa kohde-taulu ja suorita komento sieltä.'); return; }
+
+  ensureOutputColumns_(sh);
+  const dataPaste = shPaste.getDataRange().getValues();
+  const mapPaste = headerIndexMap_(dataPaste[0]);
+  const iCode = colIndexOf_(mapPaste, ['Code','Tracking','Package Number','Package Id']);
+  const iStatus = colIndexOf_(mapPaste, ['Status']);
+  const iTime = colIndexOf_(mapPaste, ['Time','Date','Timestamp']);
+  const iLoc = colIndexOf_(mapPaste, ['Location','Place','City']);
+  if (iCode===-1){ SpreadsheetApp.getUi().alert('KK_Paste: Code/Tracking -saraketta ei löytynyt.'); return; }
+
+  const data = sh.getDataRange().getValues();
+  const {hdr, map, idxCarrier, idxTrack} = resolveColumns_(sh);
+  const firstCol = hdr.indexOf('RefreshCarrier') + 1;
+  const updates = 0;
+  for (let r=1;r<data.length;r++){
+    const code = String(data[r][idxTrack]||'').trim();
+    if (!code) continue;
+    // find in paste
+    for (let pr=1; pr<dataPaste.length; pr++){
+      const pcode = String(dataPaste[pr][iCode]||'').trim();
+      if (pcode && code.indexOf(pcode)===0){
+        const rowData = ['Kaukokiito', dataPaste[pr][iStatus]||'', dataPaste[pr][iTime]||'', dataPaste[pr][iLoc]||'', '', fmtIso_(new Date())];
+        sh.getRange(r+1, firstCol, 1, rowData.length).setValues([rowData]);
+        break;
+      }
+    }
+  }
+  SpreadsheetApp.getUi().alert('Kaukokiito-päivitys sovellettu.');
+}

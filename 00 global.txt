@@ -1,0 +1,19 @@
+/** 00_globals.gs — keskitetyt vartioidut globaalit sheet-nimet */
+
+function _prop_(k, def){
+  try {
+    const v = PropertiesService.getScriptProperties().getProperty(k);
+    return (v == null || v === '') ? def : v;
+  } catch (e) {
+    return def;
+  }
+}
+
+// Nämä ovat turvallisia vaikka tiedosto olisi kahdesti projektissa:
+if (typeof ACTION_SHEET   === 'undefined') var ACTION_SHEET    = _prop_('ACTION_SHEET',   'Vaatii_toimenpiteitä');
+if (typeof TARGET_SHEET   === 'undefined') var TARGET_SHEET    = _prop_('TARGET_SHEET',   'Packages');
+if (typeof ARCHIVE_SHEET  === 'undefined') var ARCHIVE_SHEET   = _prop_('ARCHIVE_SHEET',  'Packages_Archive');
+if (typeof KK_PASTE_SHEET === 'undefined') var KK_PASTE_SHEET  = _prop_('KK_PASTE_SHEET', 'KK_Paste');
+
+// PBI staging -nimi jos koodi sitä käyttää:
+if (typeof PBI_STAGING_SHEET === 'undefined') var PBI_STAGING_SHEET = 'PBI_Outbound_Staging';

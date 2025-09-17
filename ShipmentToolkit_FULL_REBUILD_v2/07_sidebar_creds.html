@@ -1,0 +1,70 @@
+
+<!-- 07_sidebar_creds.html -->
+<!doctype html><meta charset="utf-8">
+<title>Integraatioavaimet</title>
+<style>
+body{font:14px system-ui;margin:16px;color:#111}
+h1{font-size:18px;margin:0 0 10px}
+.grid{display:grid;grid-template-columns:220px 1fr;gap:8px;align-items:center}
+.row{display:contents}
+input[type=text],input[type=password]{width:100%}
+small{color:#666}
+button{padding:6px 12px;margin:12px 8px 0 0}
+hr{margin:14px 0}
+</style>
+<h1>Credentials Hub</h1>
+<div class="grid" id="grid"></div>
+<hr>
+<button onclick="save()">Tallenna</button>
+<button onclick="google.script.host.close()">Sulje</button>
+<script>
+const FIELDS = [
+  ['CARRIER_DEFAULT_COL','25','Carrier column (1-based, Y=25)'],
+  ['TRACKING_HEADER_HINT','Package Number','Tracking header hint'],
+  ['TRACKING_DEFAULT_COL','1','Tracking default column (A=1)'],
+  ['REFRESH_MIN_AGE_MINUTES','360','Min age before refresh (minutes)'],
+  ['AUTO_SCAN_ORDER','posti,gls,matkahuolto,dhl,bring','Autodetect order (optional)'],
+  ['DEDUP_JOIN_CARRIER','false','Join dup key with carrier (true/false)'],
+  // API keys
+  ['POSTI_TOKEN_URL','','Posti OAuth token URL'],
+  ['POSTI_BASIC','','Posti BASIC base64(client:secret)'],
+  ['POSTI_TRACK_URL','','Posti Bearer tracking URL ({{code}})'],
+  ['POSTI_TRK_URL','','Posti fallback Basic URL ({{code}})'],
+  ['POSTI_TRK_BASIC','','Posti Basic base64(user:pass)'],
+  ['POSTI_TRK_USER','','Posti Basic user'],
+  ['POSTI_TRK_PASS','','Posti Basic pass'],
+  ['GLS_FI_TRACK_URL','','GLS FI API URL'],
+  ['GLS_FI_API_KEY','','GLS FI x-api-key'],
+  ['GLS_FI_SENDER_ID','','GLS Sender ID (optional)'],
+  ['GLS_FI_SENDER_IDS','','GLS Sender IDs (comma)'],
+  ['GLS_FI_METHOD','POST','GLS method (POST/GET)'],
+  ['GLS_TOKEN_URL','','GLS OAuth token URL'],
+  ['GLS_BASIC','','GLS OAuth BASIC base64(client:secret)'],
+  ['GLS_TRACK_URL','','GLS OAuth tracking URL ({{code}})'],
+  ['DHL_TRACK_URL','','DHL tracking URL ({{code}})'],
+  ['DHL_API_KEY','','DHL API key'],
+  ['BRING_TRACK_URL','','Bring tracking URL ({{code}})'],
+  ['BRING_UID','','Bring API Uid'],
+  ['BRING_KEY','','Bring API Key'],
+  ['BRING_CLIENT_URL','','Bring Client URL'],
+  ['MH_TRACK_URL','','Matkahuolto URL ({{code}})'],
+  ['MH_BASIC','','Matkahuolto BASIC base64(user:pass)']
+];
+
+function row(label, key, value, hint){
+  return `<div class="row"><label>${label}<br><small>${hint||''}</small></label><input type="text" id="${key}" value="${value||''}"></div>`;
+}
+
+google.script.run.withSuccessHandler((props)=>{
+  const g = document.getElementById('grid');
+  g.innerHTML = FIELDS.map(([k,def,h]) => row(k,k,(props[k]||def),h)).join('');
+}).credGetProps();
+
+function save(){
+  const data = {};
+  FIELDS.forEach(([k]) => data[k] = document.getElementById(k).value);
+  google.script.run.withSuccessHandler(()=>{
+    alert('Tallennettu.');
+  }).credSaveProps(data);
+}
+</script>

@@ -1,0 +1,53 @@
+
+/** 07_duplicates_and_quality.gs — duplicate checks & comparisons **/
+
+function checkArchiveDuplicates(){
+  const ss = SpreadsheetApp.getActive();
+  const sh = ss.getSheetByName(ARCHIVE_SHEET);
+  if (!sh){ SpreadsheetApp.getUi().alert('Puuttuu '+ARCHIVE_SHEET); return; }
+  const data = sh.getDataRange().getValues();
+  if (data.length<2){ SpreadsheetApp.getUi().alert('Ei dataa arkistossa.'); return; }
+  const map = headerIndexMap_(data[0]);
+  const idxK = colIndexOf_(map, ['TrackingNumber','Package Number','PackageNumber','Package Id','PackageId','Package id','Package number']);
+  if (idxK===-1){ SpreadsheetApp.getUi().alert('Arkistossa ei löytynyt tunniste-saraketta.'); return; }
+  const seen = {}, dups = [data[0]];
+  for (let r=1;r<data.length;r++){
+    const k = String(data[r][idxK]||'').trim();
+    if (!k) continue;
+    if (seen[k]) dups.push(data[r]); else seen[k]=true;
+  }
+  const rep = ss.getSheetByName('Archive_Duplicates') || ss.insertSheet('Archive_Duplicates');
+  rep.clear();
+  rep.getRange(1,1,dups.length, dups[0].length).setValues(dups);
+  SpreadsheetApp.getUi().alert('Duplikaattiraportti valmis: Archive_Duplicates');
+}
+
+/* Compare orders between two sources: same Reference but different carrier */
+function reportDuplicateOrdersDifferentCarrier(){
+  const ss = SpreadsheetApp.getActive();
+  const a = (ss.getSheetByName(TARGET_SHEET)||{}).getDataRange().getValues();
+  const b = (ss.getSheetByName(ARCHIVE_SHEET)||{}).getDataRange().getValues();
+  if (!a || a.length<2 || !b || b.length<2){ SpreadsheetApp.getUi().alert('Tarvitsee dataa molemmissa tauluissa.'); return; }
+  const ma = headerIndexMap_(a[0]), mb = headerIndexMap_(b[0]);
+  const idxRefA = colIndexOf_(ma, ['Reference orderid','Reference','Order Ref','Receiver reference']);
+  const idxRefB = colIndexOf_(mb, ['Reference orderid','Reference','Order Ref','Receiver reference']);
+  const idxCA = colIndexOf_(ma, ['Carrier']); const idxCB = colIndexOf_(mb, ['Carrier']);
+  const mapRef = {};
+  for (let r=1;r<b.length;r++){
+    const ref = String(b[r][idxRefB]||'').trim();
+    const car = String(b[r][idxCB]||'').trim();
+    if (ref) mapRef[ref] = mapRef[ref] || {}; mapRef[ref][car]=true;
+  }
+  const rows = [['Reference','Carriers_in_ARCHIVE','Carrier_in_PACKAGES','Row#']];
+  for (let r=1;r<a.length;r++){
+    const ref = String(a[r][idxRefA]||'').trim(); if (!ref) continue;
+    const car = String(a[r][idxCA]||'').trim();
+    const seen = mapRef[ref] ? Object.keys(mapRef[ref]).sort().join(', ') : '';
+    if (seen && seen.indexOf(car)===-1){
+      rows.push([ref, seen, car, r+1]);
+    }
+  }
+  const rep = ss.getSheetByName('Duplicate_Orders') || ss.insertSheet('Duplicate_Orders');
+  rep.clear(); rep.getRange(1,1,rows.length, rows[0].length).setValues(rows);
+  SpreadsheetApp.getUi().alert('Raportti valmis: Duplicate_Orders');
+}

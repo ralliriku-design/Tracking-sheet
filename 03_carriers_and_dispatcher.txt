@@ -1,0 +1,270 @@
+
+/** 03_carriers_and_dispatcher.gs — carrier APIs & dispatcher **/
+
+function pickLatestEvent_(events){
+  if (!Array.isArray(events) || !events.length) return null;
+  const ts = e => {
+    const cand = e.eventDateTime || e.eventTime || e.timestamp || e.dateTime || e.dateIso || e.date || e.time || '';
+    const d = new Date(cand);
+    return isNaN(d) ? 0 : d.getTime();
+  };
+  return events.slice().sort((a,b)=>ts(a)-ts(b))[events.length-1];
+}
+
+/* ==== POSTI ==== */
+function TRK_trackPosti(code){
+  const carrierName = 'Posti';
+  trkRateLimitWait_(carrierName);
+
+  // OAuth (new)
+  const tokenUrl = TRK_props_('POSTI_TOKEN_URL');
+  const basic = TRK_props_('POSTI_BASIC');
+  const trackUrl = (TRK_props_('POSTI_TRACK_URL')||'').replace('{{code}}', encodeURIComponent(code));
+  if (tokenUrl && basic && trackUrl){
+    const tok = TRK_safeFetch_(tokenUrl, {
+      method:'post',
+      headers:{ 'Authorization':'Basic '+basic, 'Content-Type':'application/x-www-form-urlencoded' },
+      payload:{ grant_type:'client_credentials' },
+      muteHttpExceptions:true
+    });
+    let access=''; try { access = JSON.parse(tok.getContentText()).access_token || ''; } catch(e){}
+    if (access){
+      const res = TRK_safeFetch_(trackUrl, { method:'get', headers:{ 'Authorization':'Bearer '+access, 'Accept':'application/json' }, muteHttpExceptions:true });
+      const http = res.getResponseCode ? res.getResponseCode() : 0;
+      const body = res.getContentText ? (res.getContentText()||'') : '';
+      if (http === 401 && /Basic authentication not allowed/i.test(body)) {
+        return { carrier: carrierName, status:'AUTH_ERROR_401', raw: body.slice(0,1000) };
+      }
+      if (http === 429){ autoTuneRateLimitOn429_('POSTI', 200, 2000); return { carrier: carrierName, status:'RATE_LIMIT_429', raw: body.slice(0,1000) }; }
+      if (http >= 200 && http < 300){
+        try{
+          const j = JSON.parse(body);
+          const p = j?.parcelShipments?.[0] || j?.shipments?.[0] || j?.items?.[0] || j;
+          const last = pickLatestEvent_(p?.events || []) || p?.latestEvent || {};
+          const status = (last.eventDescription?.fi || last.eventDescription?.en || last.eventDescription) || last.status || '';
+          const time = last.eventDateTime || last.timestamp || last.dateTime || '';
+          const location = last.location?.displayName || last.location?.name || last.city || '';
+          if (status) return { carrier: carrierName, found:true, status, time, location, raw: body.slice(0,2000) };
+        }catch(e){}
+      }
+    }
+  }
+
+  // Legacy fallback (Basic)
+  const fbUrl = (TRK_props_('POSTI_TRK_URL')||'').replace('{{code}}', encodeURIComponent(code));
+  let fbBasic = TRK_props_('POSTI_TRK_BASIC');
+  const fbUser = TRK_props_('POSTI_TRK_USER'), fbPass = TRK_props_('POSTI_TRK_PASS');
+  if (fbUrl && (fbBasic || (fbUser && fbPass))){
+    if (!fbBasic) fbBasic = Utilities.base64Encode(fbUser+':'+fbPass);
+    const res = TRK_safeFetch_(fbUrl, { method:'get', headers:{ 'Authorization':'Basic '+fbBasic, 'Accept':'application/json' }, muteHttpExceptions:true });
+    const http = res.getResponseCode ? res.getResponseCode() : 0;
+    const body = res.getContentText ? (res.getContentText()||'') : '';
+    if (http === 429){ autoTuneRateLimitOn429_('POSTI', 200, 2000); return { carrier: carrierName, status:'RATE_LIMIT_429', raw: body.slice(0,1000) }; }
+    if (http >= 400) return { carrier: carrierName, status:'HTTP_'+http, raw: body.slice(0,1000) };
+    try{
+      const j = JSON.parse(body);
+      const ev = (j.parcelShipments?.[0]?.events) || j.events || j.trackingEvents || [];
+      const last = pickLatestEvent_(Array.isArray(ev)?ev:[]) || {};
+      const status = last.eventDescription || last.description || last.status || '';
+      const time = last.eventDateTime || last.timestamp || last.dateTime || '';
+      const location = last.location?.name || last.location || last.city || '';
+      return { carrier: carrierName, found: !!status, status, time, location, raw: body.slice(0,2000) };
+    }catch(e){}
+  }
+  return { carrier: carrierName, status:'MISSING_CREDENTIALS' };
+}
+
+/* ==== GLS ==== */
+function TRK_trackGLS(code){
+  const carrierName = 'GLS';
+  trkRateLimitWait_(carrierName);
+  const base = TRK_props_('GLS_FI_TRACK_URL');
+  const key  = TRK_props_('GLS_FI_API_KEY');
+  const sender = TRK_props_('GLS_FI_SENDER_ID');
+  const method = (TRK_props_('GLS_FI_METHOD')||'POST').toUpperCase();
+  if (base && key){
+    let url = base, opt = { muteHttpExceptions:true, headers:{'x-api-key':key,'accept':'application/json'} };
+    if (method === 'POST'){ opt.method='post'; opt.contentType='application/json'; opt.payload=JSON.stringify(sender?{senderId:sender, parcelNo:code}:{parcelNo:code}); }
+    else { url = url + (url.includes('?')?'&':'?') + (sender?('senderId='+encodeURIComponent(sender)+'&'):'') + 'parcelNo=' + encodeURIComponent(code); opt.method='get'; }
+    const res = TRK_safeFetch_(url, opt);
+    const http = res.getResponseCode ? res.getResponseCode() : 0;
+    const body = res.getContentText ? (res.getContentText()||'') : '';
+    if (http === 429){ autoTuneRateLimitOn429_('GLS', 200, 2000); return { carrier: carrierName, status:'RATE_LIMIT_429', raw: body.slice(0,1000) }; }
+    if (http >= 200 && http < 300){
+      try{
+        const j = JSON.parse(body);
+        const p = j?.parcels?.[0] || j?.parcel || j;
+        const ev = Array.isArray(p?.events)?p.events:[];
+        const last = ev.length ? (pickLatestEvent_(ev)||{}) : {};
+        const status = last.description || p.status || last.code || '';
+        const time = p.statusDateTime || last.eventDateTime || last.timestamp || last.dateTime || '';
+        const location = [last.city||'', last.postalCode||'', last.country||''].filter(Boolean).join(' ');
+        if (status) return { carrier: carrierName, found:true, status, time, location, raw: body.slice(0,2000) };
+      }catch(e){}
+    }
+  }
+  // OAuth fallback (GLS global)
+  const tokenUrl = TRK_props_('GLS_TOKEN_URL');
+  const basic = TRK_props_('GLS_BASIC');
+  const trackUrl = (TRK_props_('GLS_TRACK_URL')||'').replace('{{code}}', encodeURIComponent(code));
+  if (tokenUrl && basic && trackUrl){
+    const tok = TRK_safeFetch_(tokenUrl, { method:'post', headers:{ 'Authorization':'Basic '+basic, 'Content-Type':'application/x-www-form-urlencoded' }, payload:{ grant_type:'client_credentials' }, muteHttpExceptions:true });
+    let access=''; try { access = JSON.parse(tok.getContentText()).access_token || ''; } catch(e){}
+    if (!access) return { carrier: 'GLS', status:'TOKEN_FAIL', raw: tok.getContentText().slice(0,500) };
+    const res = TRK_safeFetch_(trackUrl, { method:'get', headers:{ 'Authorization':'Bearer '+access, 'Accept':'application/json' }, muteHttpExceptions:true });
+    const http = res.getResponseCode ? res.getResponseCode() : 0;
+    const body = res.getContentText ? (res.getContentText()||'') : '';
+    if (http === 429){ autoTuneRateLimitOn429_('GLS', 200, 2000); return { carrier: 'GLS', status:'RATE_LIMIT_429', raw: body.slice(0,1000) }; }
+    if (http >= 400) return { carrier:'GLS', status:'HTTP_'+http, raw: body.slice(0,1000) };
+    try{
+      const j = JSON.parse(body);
+      const it = j?.parcels?.[0] || j?.items?.[0] || j?.shipment || j?.consignment?.[0] || j;
+      const ev = Array.isArray(it?.events)?it.events:[];
+      const last = pickLatestEvent_(ev)||{};
+      const status = last.description || last.eventDescription || last.name || last.status || last.code || '';
+      const time = last.dateTime || last.timestamp || last.dateIso || last.date || '';
+      const location = (last.location && (last.location.name || last.location.displayName)) || last.location || last.depot || last.city || '';
+      return { carrier:'GLS', found: !!status, status, time, location, raw: body.slice(0,2000) };
+    }catch(e){}
+  }
+  return { carrier:'GLS', status:'MISSING_CREDENTIALS' };
+}
+
+/* ==== DHL ==== */
+function TRK_trackDHL(code){
+  const url = (TRK_props_('DHL_TRACK_URL')||'').replace('{{code}}', encodeURIComponent(code));
+  const key = TRK_props_('DHL_API_KEY');
+  if (!url || !key) return { carrier:'DHL', status:'MISSING_CREDENTIALS' };
+  trkRateLimitWait_('DHL');
+  const res = TRK_safeFetch_(url, { method:'get', headers:{ 'DHL-API-Key':key, 'Accept':'application/json' }, muteHttpExceptions:true });
+  const http = res.getResponseCode ? res.getResponseCode() : 0;
+  const body = res.getContentText ? (res.getContentText()||'') : '';
+  if (http === 429) return { carrier:'DHL', status:'RATE_LIMIT_429', raw: body.slice(0,1000) };
+  if (http >= 400) return { carrier:'DHL', status:'HTTP_'+http, raw: body.slice(0,1000) };
+  try{
+    const j = JSON.parse(body);
+    const p = j?.parcels?.[0] || j?.shipments?.[0] || j;
+    const ev = Array.isArray(p?.events) ? p.events : [];
+    const last = pickLatestEvent_(ev) || p.status || {};
+    const status = last.description || last.status || p?.status?.status || '';
+    const time = p.statusDateTime || last.eventDateTime || last.timestamp || last.dateTime || '';
+    const addr = last.location?.address;
+    const location = addr ? [addr.addressLocality, (addr.countryCode||addr.addressCountryCode)].filter(Boolean).join(', ') : (last.location || '');
+    return { carrier:'DHL', found:!!status, status, time, location, raw: body.slice(0,2000) };
+  }catch(e){}
+  return { carrier:'DHL', status:'NO_DATA', raw: body.slice(0,2000) };
+}
+
+/* ==== BRING ==== */
+function TRK_trackBring(code) {
+  trkRateLimitWait_('Bring');
+
+  const url = (TRK_props_('BRING_TRACK_URL') || '')
+    .replace('{{code}}', encodeURIComponent(code));
+
+  const uid = TRK_props_('BRING_UID');
+  const key = TRK_props_('BRING_KEY');
+  const cli = TRK_props_('BRING_CLIENT_URL');
+
+  if (!url || !uid || !key || !cli) {
+    return { carrier: 'Bring', status: 'MISSING_CREDENTIALS' };
+  }
+
+  const res = TRK_safeFetch_(url, {
+    method: 'GET', // isolla kirjaimella!
+    headers: {
+      'X-MyBring-API-Uid': uid,
+      'X-MyBring-API-Key': key,
+      'X-Bring-Client-URL': cli,
+      'Accept': 'application/json'
+    },
+    muteHttpExceptions: true
+  });
+
+  const http = res.getResponseCode ? res.getResponseCode() : 0;
+  const body = res.getContentText ? (res.getContentText() || '') : '';
+
+  if (http === 429) {
+    return { carrier: 'Bring', status: 'RATE_LIMIT_429', raw: body.slice(0, 1000) };
+  }
+  if (http >= 400) {
+    return { carrier: 'Bring', status: 'HTTP_' + http, raw: body.slice(0, 1000) };
+  }
+
+  try {
+    const j = JSON.parse(body);
+
+    // Bringin rakenne: tracking[0].consignments[0].events
+    const consignment =
+      j?.tracking?.[0]?.consignments?.[0] ||
+      j?.consignments?.[0] ||
+      j;
+
+    const events = Array.isArray(consignment?.events) ? consignment.events : [];
+    const last = pickLatestEvent_(events) || {};
+
+    const status =
+      last.description ||
+      last.eventDescription ||
+      last.status ||
+      j?.tracking?.[0]?.state ||
+      '';
+
+    const time =
+      last.dateIso ||
+      last.date ||
+      last.timestamp ||
+      '';
+
+    const location =
+      last.location ||
+      last.city ||
+      '';
+
+    return {
+      carrier: 'Bring',
+      found: !!status,
+      status,
+      time,
+      location,
+      raw: body.slice(0, 2000)
+    };
+
+  } catch (e) {
+    return { carrier: 'Bring', status: 'NO_DATA', raw: body.slice(0, 2000) };
+  }
+}
+
+
+/* ==== MATKAHUOLTO ==== */
+function TRK_trackMH(code){
+  trkRateLimitWait_('Matkahuolto');
+  const url = (TRK_props_('MH_TRACK_URL')||'').replace('{{code}}', encodeURIComponent(code));
+  const basic = TRK_props_('MH_BASIC');
+  if (!url || !basic) return { carrier:'Matkahuolto', status:'MISSING_CREDENTIALS' };
+  const res = TRK_safeFetch_(url, { method:'get', headers:{ 'Authorization':'Basic '+basic, 'Accept':'application/json' }, muteHttpExceptions:true });
+  const body = res.getContentText()||'';
+  try{
+    const j = JSON.parse(body);
+    const first = j?.[0] || j?.items?.[0] || j?.consignment || j?.shipment || j;
+    const ev = Array.isArray(first?.events) ? first.events : (Array.isArray(first?.history)?first.history:[]);
+    const last = pickLatestEvent_(ev)||{};
+    const status = last.status || last.description || last.eventDescription || last.name || '';
+    const time = last.time || last.timestamp || last.dateTime || last.dateIso || last.date || '';
+    const location = last.location || last.place || last.depot || last.city || '';
+    return { carrier:'Matkahuolto', found: !!status, status, time, location, raw: body.slice(0,2000) };
+  }catch(e){}
+  return { carrier:'Matkahuolto', status:'NO_DATA', raw: body.slice(0,2000) };
+}
+
+/* ==== Dispatcher ==== */
+function TRK_trackByCarrier_(carrier, code){
+  const c = canonicalCarrier_(carrier);
+  if (c === 'gls') return TRK_trackGLS(code);
+  if (c === 'posti') return TRK_trackPosti(code);
+  if (c === 'dhl') return TRK_trackDHL(code);
+  if (c === 'bring') return TRK_trackBring(code);
+  if (c === 'matkahuolto') return TRK_trackMH(code);
+  if (c === 'kaukokiito') return { carrier:'Kaukokiito', status:'MANUAL_ONLY' };
+  return { carrier: carrier||'', status:'UNKNOWN_CARRIER' };
+}

@@ -1,0 +1,5494 @@
+{
+  "name": "Get: trackings to sheet",
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        432,
+        880
+      ],
+      "id": "98c7ce90-b635-415a-ba07-9fdf464553d3",
+      "name": "When clicking ‘Test workflow’"
+    },
+    {
+      "parameters": {
+        "url": "=https://api.posti.fi/tracking/7/shipments/trackingnumbers/{{ $json.tracking_refs }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('posti public access token').first().json.access_token }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1712,
+        624
+      ],
+      "id": "afbd5817-902c-4dae-add2-38b79de6a024",
+      "name": "gettracking"
+    },
+    {
+      "parameters": {
+        "authentication": "basicAuth",
+        "formTitle": "Upload File",
+        "formDescription": "Aja posti glue exportti sellaisenaan. Älä muuta headerja.",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "Files",
+              "fieldType": "file",
+              "acceptFileTypes": ".csv, .xlsx"
+            },
+            {
+              "fieldLabel": "Source",
+              "fieldType": "dropdown",
+              "fieldOptions": {
+                "values": [
+                  {
+                    "option": "Posti - Glue"
+                  },
+                  {
+                    "option": "Posti"
+                  },
+                  {
+                    "option": "GLS"
+                  },
+                  {
+                    "option": "Matkahuolto"
+                  },
+                  {
+                    "option": "DHL"
+                  }
+                ]
+              },
+              "requiredField": true
+            }
+          ]
+        },
+        "responseMode": "lastNode",
+        "options": {
+          "path": "123qpalskdjhtwm12312"
+        }
+      },
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.2,
+      "position": [
+        -1376,
+        832
+      ],
+      "id": "8ca8df32-b630-4dd8-9c3b-b894141a8ca6",
+      "name": "On form submission",
+      "webhookId": "e6001c97-0230-429c-85c9-5c2d363ae099",
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "zvP4BwyrTJJR1RKU",
+          "name": "n8n: Rahtilaskut"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const binaryEntry = $node[\"On form submission\"].binary[\"Files\"];\nlet output = [];\n\nconst newData = {\n  filename: binaryEntry.fileName,\n};\n\noutput.push({\n  json: newData,\n  binary: {\n    data: binaryEntry\n  }\n});\n\nreturn output;"
+      },
+      "id": "39d0f43b-5029-4b26-89f8-b01b3be5365b",
+      "name": "Extract binaries",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        288,
+        -416
+      ]
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        1408,
+        512
+      ],
+      "id": "74cde5e2-6d9c-4890-8444-03d019727a95",
+      "name": "Loop Over Items1"
+    },
+    {
+      "parameters": {
+        "amount": 3
+      },
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        2528,
+        624
+      ],
+      "id": "0510649b-e771-4246-bb93-5a5d9d66c780",
+      "name": "Wait1",
+      "webhookId": "0e4943b2-3d46-4b25-bc4c-0fb5e52e8a44"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1664,
+        432
+      ],
+      "id": "a1d3185d-bba9-49a3-af50-0907bddf0d63",
+      "name": "No Operation, do nothing1"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://oauth2.posti.com/oauth/token",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {}
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json"
+            },
+            {
+              "name": "authorization",
+              "value": "=Basic {{'ma_09931637_1P:ZatuCE8isPeStlSijl4u'.base64Encode()}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "grant_type",
+              "value": "client_credentials"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        0,
+        -384
+      ],
+      "id": "746a67d9-ca98-44e4-8cdd-484d18151336",
+      "name": "posti external access token",
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://oauth2.posti.com/oauth/token",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {}
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json"
+            },
+            {
+              "name": "authorization",
+              "value": "=Basic {{'ma_09931637_5P:4IbO6pLTuC1vOhi2ipRI'.base64Encode()}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "grant_type",
+              "value": "client_credentials"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        32,
+        512
+      ],
+      "id": "375c5ff4-6442-4535-94e6-c78114d24d87",
+      "name": "posti public access token",
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "operation": "xlsx",
+        "binaryPropertyName": "=data",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        640,
+        -416
+      ],
+      "id": "b61c662a-30f2-4a82-94b3-cf4c09a08381",
+      "name": "Extract from File"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.Source }}",
+                    "rightValue": "Posti",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "3c5184b9-7b0b-44df-b5cf-5fa6f4bcbb35"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Posti"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "2af6ba49-f732-4d24-93c1-992d6d2caf32",
+                    "leftValue": "={{ $json.Source }}",
+                    "rightValue": "Posti - Glue",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Posti - Glue"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "0bd2e741-d77b-45c5-bd39-994e852a31fd",
+                    "leftValue": "={{ $json.Source }}",
+                    "rightValue": "GLS",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "GLS"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "f717fb75-0469-4167-8b14-b336e214f6b6",
+                    "leftValue": "={{ $json.Source }}",
+                    "rightValue": "Matkahuolto",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Matkahuolto"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "7539317c-5df6-4e73-8ded-e3ebb24541bf",
+                    "leftValue": "={{ $json.Source }}",
+                    "rightValue": "DHL",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "DHL"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        -1104,
+        800
+      ],
+      "id": "2312a6a2-ec2f-4378-bbf2-efc41e424db2",
+      "name": "Switch"
+    },
+    {
+      "parameters": {
+        "jsCode": "const binaryEntry = $node[\"On form submission\"].binary[\"Files\"];\nlet output = [];\n\nconst newData = {\n  filename: binaryEntry.fileName,\n};\n\noutput.push({\n  json: newData,\n  binary: {\n    data: binaryEntry\n  }\n});\n\nreturn output;"
+      },
+      "id": "8c01d51c-c84c-4c59-86ed-f66ef7102cd9",
+      "name": "Extract binaries2",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        288,
+        512
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "xlsx",
+        "binaryPropertyName": "=data",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        672,
+        512
+      ],
+      "id": "494f4909-cd27-4f9b-a7cf-6ca347a96365",
+      "name": "Extract from File2"
+    },
+    {
+      "parameters": {
+        "jsCode": "let tracking_refs = [];\nlet group = [];\n\nconst items = $input.all();\n\nfor (const item of items) {\n  const raw = item.json['tracking code']+'';\n\n  if (!raw) continue;\n\n  const refs = raw\n    .split(',')\n    .map(ref => ref.trim());\n\n  for (const ref of refs) {\n    group.push(ref);\n    if (group.length === 10) {\n      tracking_refs.push({ json: { tracking_refs: group } });\n      group = [];\n    }\n  }\n}\n\nif (group.length > 0) {\n  tracking_refs.push({ json: { tracking_refs: group } });\n}\n\nreturn tracking_refs;\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        512
+      ],
+      "id": "faf6cf4e-6e1e-48b8-9fd9-83fff90c217d",
+      "name": "turn into 10 tracking lists1"
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "parcelShipments",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [
+        2224,
+        624
+      ],
+      "id": "cc59a96a-dc81-492d-afe7-d778b476f491",
+      "name": "Split Out"
+    },
+    {
+      "parameters": {
+        "mode": "combineBySql",
+        "query": "SELECT DISTINCT\ninput2.customer,\ninput2.order_number,\ninput2.order_references,\ninput2.order_date,\ninput2.item_id,\ninput2.description,\ninput2.EAN,\ninput2.catalog_id,\ninput2.ordered_quantity,\ninput2.delivered_quantity,\ninput2.wholesales_price,\ninput2.service_code,\ninput2.client_name,\ninput2.client_street_address,\ninput2.client_postal_code,\ninput2.client_post_office,\ninput2.client_country,\ninput2.client_telephone,\ninput2.client_email,\ninput2.recipient_name,\ninput2.recipient_street_address,\ninput2.recipient_postal_code,\ninput2.recipient_post_office,\ninput2.recipient_country,\ninput2.recipient_telephone,\ninput2.recipient_email,\ninput2.delivery_name,\ninput2.delivery_street_address,\ninput2.delivery_postal_code,\ninput2.delivery_post_office,\ninput2.delivery_country,\ninput2.delivery_telephone,\ninput2.delivery_email,\ninput2.tracking_code,\ninput1.status.code AS tracking_status,\ninput1.status.description.fi AS tracking_description\n  \n  \nFROM input2 LEFT JOIN input1 ON input1.trackingNumber = input2.tracking_code"
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.1,
+      "position": [
+        3200,
+        528
+      ],
+      "id": "eea4eb20-66fe-4639-8df1-82444268fda0",
+      "name": "Merge"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "d016b440-4e0a-4cc0-ab89-117be9849275",
+              "name": "customer",
+              "value": "={{ $json.customer }}",
+              "type": "string"
+            },
+            {
+              "id": "1bb60a95-48a0-4d8a-b872-31dd632ff2d5",
+              "name": "order_number",
+              "value": "={{ $json[\"order number\"] }}",
+              "type": "string"
+            },
+            {
+              "id": "f06ab3fb-27ca-4c72-ab11-ee5a95adb185",
+              "name": "order_references",
+              "value": "={{ $json.references }}",
+              "type": "string"
+            },
+            {
+              "id": "d89ea87f-4a83-4b48-8a94-7b77d455b06c",
+              "name": "order_date",
+              "value": "={{ $json[\"order date\"] }}",
+              "type": "string"
+            },
+            {
+              "id": "ae59d9ed-d4a8-45cd-83f4-014b092bd51f",
+              "name": "item_id",
+              "value": "={{ $json[\"item id\"] }}",
+              "type": "string"
+            },
+            {
+              "id": "e0cecb59-55f3-4a7c-91ab-f1fe4512a506",
+              "name": "description",
+              "value": "={{ $json.description }}",
+              "type": "string"
+            },
+            {
+              "id": "7d7ef9f9-8883-4734-9df1-c47b1b560f12",
+              "name": "EAN",
+              "value": "={{ $json.EAN }}",
+              "type": "string"
+            },
+            {
+              "id": "6b15cfc5-c965-4e75-a840-55543fc904c6",
+              "name": "catalog_id",
+              "value": "={{ $json[\"catalog id\"] }}",
+              "type": "string"
+            },
+            {
+              "id": "e4ee6c1a-4177-4004-a207-f1e0bc754f76",
+              "name": "ordered_quantity",
+              "value": "={{ $json[\"ordered quantity\"] }}",
+              "type": "number"
+            },
+            {
+              "id": "b004fae5-b3eb-4d54-94f6-60164a6cf966",
+              "name": "delivered_quantity",
+              "value": "={{ $json[\"delivered quantity\"] }}",
+              "type": "number"
+            },
+            {
+              "id": "9a05f6f7-c14c-433c-85b2-ddfa029d0b99",
+              "name": "wholesales_price",
+              "value": "={{ $json[\"wholesales price\"] }}",
+              "type": "number"
+            },
+            {
+              "id": "145ad040-6553-4dec-8d35-8e87a2945992",
+              "name": "tracking_code",
+              "value": "={{ $json[\"tracking code\"] }}",
+              "type": "string"
+            },
+            {
+              "id": "7bf396b8-d25a-4b75-8195-fcf58514693f",
+              "name": "service_code",
+              "value": "={{ $json[\"service code\"] }}",
+              "type": "string"
+            },
+            {
+              "id": "9a062793-e6e0-412d-9fec-3c198864edef",
+              "name": "client_name",
+              "value": "={{ $json[\"client name\"] }}",
+              "type": "string"
+            },
+            {
+              "id": "f3508fa2-2d96-404a-ab63-e8e5788fdfe8",
+              "name": "client_street_address",
+              "value": "={{ $json[\"client street address\"] }}",
+              "type": "string"
+            },
+            {
+              "id": "378765e8-473b-4abd-a65b-18cfde9df05f",
+              "name": "client_postal_code",
+              "value": "={{ $json[\"client postal code\"] }}",
+              "type": "string"
+            },
+            {
+              "id": "c7060b50-e637-41f5-a2f3-85e0c57a19d8",
+              "name": "client_post_office",
+              "value": "={{ $json[\"client post office\"] }}",
+              "type": "string"
+            },
+            {
+              "id": "44291212-2fd8-4c00-a1a7-37821d23e542",
+              "name": "client_country",
+              "value": "={{ $json[\"client country\"] }}",
+              "type": "string"
+            },
+            {
+              "id": "da441bd0-cd50-4d53-8c79-af9450a78924",
+              "name": "client_telephone",
+              "value": "={{ $json[\"client telephone\"] }}",
+              "type": "string"
+            },
+            {
+              "id": "2bbd2b95-0b4d-4d9c-a737-1775d472b85f",
+              "name": "client_email",
+              "value": "={{ $json[\"client email\"] }}",
+              "type": "string"
+            },
+            {
+              "id": "a07b2e2c-2e8c-45b1-8d5d-8bbfcea12718",
+              "name": "recipient_name",
+              "value": "={{ $json[\"recipient name\"] }}",
+              "type": "string"
+            },
+            {
+              "id": "d57cb181-5600-44ec-ac14-b0290725b993",
+              "name": "recipient_street_address",
+              "value": "={{ $json[\"recipient street address\"] }}",
+              "type": "string"
+            },
+            {
+              "id": "856f3f87-f607-4145-b7d6-abc6c700ed3b",
+              "name": "recipient_postal_code",
+              "value": "={{ $json[\"recipient postal code\"] }}",
+              "type": "string"
+            },
+            {
+              "id": "ec228561-cf3e-4379-bcbf-049057515d73",
+              "name": "recipient_post_office",
+              "value": "={{ $json[\"recipient post office\"] }}",
+              "type": "string"
+            },
+            {
+              "id": "c806b5f6-7141-4dcf-b30f-740b61df5370",
+              "name": "recipient_country",
+              "value": "={{ $json[\"recipient country\"] }}",
+              "type": "string"
+            },
+            {
+              "id": "dfaac274-d476-469b-abda-6156ac48a2d8",
+              "name": "recipient_telephone",
+              "value": "={{ $json[\"recipient telephone\"] }}",
+              "type": "string"
+            },
+            {
+              "id": "1f1070f3-eef8-45ed-8c68-9f29df630d10",
+              "name": "recipient_email",
+              "value": "={{ $json[\"recipient email\"] }}",
+              "type": "string"
+            },
+            {
+              "id": "766e7e63-197f-45b1-bd60-8951e189d5d4",
+              "name": "delivery_name",
+              "value": "={{ $json[\"delivery name\"] }}",
+              "type": "string"
+            },
+            {
+              "id": "fc7730ce-79a8-4df6-9bfb-57c0478f0f67",
+              "name": "delivery_street_address",
+              "value": "={{ $json[\"delivery street address\"] }}",
+              "type": "string"
+            },
+            {
+              "id": "db36e1bc-8ecf-422c-8ee8-f9e90ee23c6c",
+              "name": "delivery_postal_code",
+              "value": "={{ $json[\"delivery postal code\"] }}",
+              "type": "string"
+            },
+            {
+              "id": "18425714-27d8-4e39-b24f-4c179ffebd8a",
+              "name": "delivery_post_office",
+              "value": "={{ $json[\"delivery post office\"] }}",
+              "type": "string"
+            },
+            {
+              "id": "dc3ffd41-6718-411f-917b-e2b7843f714b",
+              "name": "delivery_country",
+              "value": "={{ $json[\"delivery country\"] }}",
+              "type": "string"
+            },
+            {
+              "id": "84cc8451-8f6f-4b5e-a693-5606b441c72c",
+              "name": "delivery_telephone",
+              "value": "={{ $json[\"delivery telephone\"] }}",
+              "type": "string"
+            },
+            {
+              "id": "fbda716d-f087-4191-9c4d-e3c14633d5a2",
+              "name": "delivery_email",
+              "value": "={{ $json[\"delivery email\"] }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1872,
+        1104
+      ],
+      "id": "e008ee1d-4a80-4cdc-ab78-06bf6caf45c8",
+      "name": "Edit Fields"
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1RibVi51QOJkP1gscqhMd0fdwlrF79PPs4nnLan1cLU0",
+          "mode": "list",
+          "cachedResultName": "tracking_statuses",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1RibVi51QOJkP1gscqhMd0fdwlrF79PPs4nnLan1cLU0/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 569312540,
+          "mode": "list",
+          "cachedResultName": "PostiGlue",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1RibVi51QOJkP1gscqhMd0fdwlrF79PPs4nnLan1cLU0/edit#gid=569312540"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "customer": "={{ $json.customer }}",
+            "order_number": "={{ $json.order_number }}",
+            "order_references": "={{ $json.order_references }}",
+            "order_date": "={{ $json.order_date }}",
+            "item_id": "={{ $json.item_id }}",
+            "description": "={{ $json.description }}",
+            "EAN": "={{ $json.EAN }}",
+            "catalog_id": "={{ $json.catalog_id }}",
+            "ordered_quantity": "={{ $json.ordered_quantity }}",
+            "tracking_code": "={{ $json.tracking_code }}",
+            "service_code": "={{ $json.service_code }}",
+            "client_name": "={{ $json.client_name }}",
+            "client_street_address": "={{ $json.client_street_address }}",
+            "client_postal_code": "={{ $json.client_postal_code }}",
+            "client_post_office": "={{ $json.client_post_office }}",
+            "client_country": "={{ $json.client_country }}",
+            "client_telephone": "={{ $json.client_telephone }}",
+            "client_email": "={{ $json.client_email }}",
+            "recipient_name": "={{ $json.recipient_name }}",
+            "recipient_street_address": "={{ $json.recipient_street_address }}",
+            "recipient_postal_code": "={{ $json.recipient_postal_code }}",
+            "recipient_post_office": "={{ $json.recipient_post_office }}",
+            "recipient_country": "={{ $json.recipient_country }}",
+            "recipient_telephone": "={{ $json.recipient_telephone }}",
+            "recipient_email": "={{ $json.recipient_email }}",
+            "delivery_name": "={{ $json.delivery_name }}",
+            "delivery_street_address": "={{ $json.delivery_street_address }}",
+            "delivery_postal_code": "={{ $json.delivery_postal_code }}",
+            "delivery_post_office": "={{ $json.recipient_post_office }}",
+            "delivery_country": "={{ $json.delivery_country }}",
+            "delivery_telephone": "={{ $json.delivery_telephone }}",
+            "delivery_email": "={{ $json.delivery_email }}",
+            "tracking_status": "={{ $json.tracking_status }}",
+            "tracking_description": "={{ $json.tracking_description }}",
+            "delivered_quantity": "={{ $json.delivered_quantity }}",
+            "wholesale_price": "={{ $json.wholesales_price }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "customer",
+              "displayName": "customer",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "order_number",
+              "displayName": "order_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "order_references",
+              "displayName": "order_references",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "order_date",
+              "displayName": "order_date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "item_id",
+              "displayName": "item_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "description",
+              "displayName": "description",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "EAN",
+              "displayName": "EAN",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "catalog_id",
+              "displayName": "catalog_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "ordered_quantity",
+              "displayName": "ordered_quantity",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "delivered_quantity",
+              "displayName": "delivered_quantity",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "wholesale_price",
+              "displayName": "wholesale_price",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "service_code",
+              "displayName": "service_code",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "client_name",
+              "displayName": "client_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "client_street_address",
+              "displayName": "client_street_address",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "client_postal_code",
+              "displayName": "client_postal_code",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "client_post_office",
+              "displayName": "client_post_office",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "client_country",
+              "displayName": "client_country",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "client_telephone",
+              "displayName": "client_telephone",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "client_email",
+              "displayName": "client_email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "recipient_name",
+              "displayName": "recipient_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "recipient_street_address",
+              "displayName": "recipient_street_address",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "recipient_postal_code",
+              "displayName": "recipient_postal_code",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "recipient_post_office",
+              "displayName": "recipient_post_office",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "recipient_country",
+              "displayName": "recipient_country",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "recipient_telephone",
+              "displayName": "recipient_telephone",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "recipient_email",
+              "displayName": "recipient_email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "delivery_name",
+              "displayName": "delivery_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "delivery_street_address",
+              "displayName": "delivery_street_address",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "delivery_postal_code",
+              "displayName": "delivery_postal_code",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "delivery_post_office",
+              "displayName": "delivery_post_office",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "delivery_country",
+              "displayName": "delivery_country",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "delivery_telephone",
+              "displayName": "delivery_telephone",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "delivery_email",
+              "displayName": "delivery_email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "tracking_code",
+              "displayName": "tracking_code",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "tracking_status",
+              "displayName": "tracking_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "tracking_description",
+              "displayName": "tracking_description",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        3440,
+        528
+      ],
+      "id": "2e4cb6c3-c957-4cb8-bad7-cd25a436d4f7",
+      "name": "Google Sheets1",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "xQqh9y3onFJAlJij",
+          "name": "Google sheets Aapo"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "clear",
+        "documentId": {
+          "__rl": true,
+          "value": "1RibVi51QOJkP1gscqhMd0fdwlrF79PPs4nnLan1cLU0",
+          "mode": "list",
+          "cachedResultName": "gls_tracking_statuses",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1RibVi51QOJkP1gscqhMd0fdwlrF79PPs4nnLan1cLU0/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 569312540,
+          "mode": "list",
+          "cachedResultName": "PostiGlue",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1RibVi51QOJkP1gscqhMd0fdwlrF79PPs4nnLan1cLU0/edit#gid=569312540"
+        }
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        -880,
+        480
+      ],
+      "id": "0755b92a-4fb0-4e1c-aec9-44763fb02227",
+      "name": "clear sheet",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "hmSZPe4Ek1wQeQOZ",
+          "name": "Google: aleksi.koskinen@ip-agency.fi"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "ac3108c0-347b-4a7e-a185-136ced7fd149",
+              "name": "Date",
+              "value": "={{ new Date(Math.round((Number($json.Date) - 25569) * 86400 * 1000)).toISOString() }}",
+              "type": "number"
+            },
+            {
+              "id": "9c6642e9-2457-4127-997a-fe89d6dd37ed",
+              "name": "OrderDate",
+              "value": "={{ new Date(Math.round((Number($json[\"Order Date\"]) - 25569) * 86400 * 1000)).toISOString() }}",
+              "type": "number"
+            },
+            {
+              "id": "019198c6-bbd2-44e0-abf4-2828628a33ee",
+              "name": "Reference",
+              "value": "={{ $json.Reference }}",
+              "type": "string"
+            },
+            {
+              "id": "3ef45074-1369-470a-a5ad-fdb62ddc67b3",
+              "name": "Customer",
+              "value": "={{ $json.Customer }}",
+              "type": "string"
+            },
+            {
+              "id": "0f8302d9-d6d8-49d1-bd37-9f94ec5f05ec",
+              "name": "CustomerReference",
+              "value": "={{ $json[\"Customer Reference\"] }}",
+              "type": "string"
+            },
+            {
+              "id": "8cd9ece6-195c-40d9-bc9b-af60cf334169",
+              "name": "Product",
+              "value": "={{ $json.Product }}",
+              "type": "string"
+            },
+            {
+              "id": "bba32a78-ae7d-422c-bc0b-58753cff1987",
+              "name": "Carrier",
+              "value": "={{ $json.Carrier }}",
+              "type": "string"
+            },
+            {
+              "id": "7ec0f37d-ca46-417d-9bdd-92e5cd4810eb",
+              "name": "Done",
+              "value": "={{ $json.Done }}",
+              "type": "number"
+            },
+            {
+              "id": "abc3b2c8-c624-454e-b57a-acb2ce3da8a8",
+              "name": "UnitOfMeasure",
+              "value": "={{ $json[\"Unit of Measure\"] }}",
+              "type": "string"
+            },
+            {
+              "id": "0279eee4-ec34-4039-99d2-d496df29cd0a",
+              "name": "CustomerContactAddressComplete",
+              "value": "={{ $json[\"Customer/Contact Address Complete\"] }}",
+              "type": "string"
+            },
+            {
+              "id": "2075aa45-b9a7-485f-ae22-e347193b2e9c",
+              "name": "CreatedByEmail",
+              "value": "={{ $json[\"Created by/Email\"] }}",
+              "type": "string"
+            },
+            {
+              "id": "dbe8427c-4091-4478-87f1-4f4ded0bd42e",
+              "name": "TrackingReference",
+              "value": "={{ $json[\"Transfer/Tracking Reference\"] }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {
+          "ignoreConversionErrors": true
+        }
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        928,
+        -928
+      ],
+      "id": "eb5c8a17-61be-4c13-8eb6-7e215d86aedf",
+      "name": "Edit Fields1"
+    },
+    {
+      "parameters": {
+        "jsCode": "const output = [];\n\nfor (const item of $input.all()) {\n  const input = item.json;\n\n  let refs = [];\n\n  // If valid string → split into multiple tracking refs\n  if (typeof input.TrackingReference === 'string') {\n    refs = input.TrackingReference\n      .split(',')\n      .map(ref => ref.trim())\n      .filter(Boolean);\n  }\n\n  // If no refs found, push one row with TrackingReference = null\n  if (refs.length === 0) {\n    output.push({\n      json: {\n        ...input,\n        TrackingReference: null\n      }\n    });\n    continue;\n  }\n\n  // Otherwise output one row per tracking ref\n  for (const tracking of refs) {\n    output.push({\n      json: {\n        ...input,\n        TrackingReference: tracking\n      }\n    });\n  }\n}\n\nreturn output;\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3472,
+        -608
+      ],
+      "id": "e8e20f40-620d-4e56-83ba-02012ba8cc53",
+      "name": "Code"
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1RibVi51QOJkP1gscqhMd0fdwlrF79PPs4nnLan1cLU0",
+          "mode": "list",
+          "cachedResultName": "tracking_statuses",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1RibVi51QOJkP1gscqhMd0fdwlrF79PPs4nnLan1cLU0/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 384352532,
+          "mode": "list",
+          "cachedResultName": "Posti",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1RibVi51QOJkP1gscqhMd0fdwlrF79PPs4nnLan1cLU0/edit#gid=384352532"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Date": "={{ $json.Date }}",
+            "Reference": "={{ $json['Reference'] }}",
+            "Product": "={{ $json['Product'] }}",
+            "Carrier": "={{ $json['Carrier'] }}",
+            "Done": "={{ $json['Done'] }}",
+            "Customer": "={{ $json[\"Customer\"] }}",
+            "shipment_status_from_carrier": "={{ $json['shipment_status_from_carrier'] }}",
+            "OrderDate": "={{ $json.OrderDate }}",
+            "CustomerReference": "={{ $json.CustomerReference }}",
+            "UnitOfMeasure": "={{ $json.UnitOfMeasure }}",
+            "CustomerContactAddressComplete": "={{ $json.CustomerContactAddressComplete }}",
+            "CreatedByEmail": "={{ $json.CreatedByEmail }}",
+            "TrackingReference": "={{ $json.TrackingReference }}",
+            "shipment_status_description": "={{ $json['shipment_status_description'] }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "Date",
+              "displayName": "Date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "OrderDate",
+              "displayName": "OrderDate",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Reference",
+              "displayName": "Reference",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Customer",
+              "displayName": "Customer",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "CustomerReference",
+              "displayName": "CustomerReference",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Product",
+              "displayName": "Product",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Carrier",
+              "displayName": "Carrier",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Done",
+              "displayName": "Done",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "UnitOfMeasure",
+              "displayName": "UnitOfMeasure",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "CustomerContactAddressComplete",
+              "displayName": "CustomerContactAddressComplete",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "CreatedByEmail",
+              "displayName": "CreatedByEmail",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "TrackingReference",
+              "displayName": "TrackingReference",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "shipment_status_from_carrier",
+              "displayName": "shipment_status_from_carrier",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "shipment_status_description",
+              "displayName": "shipment_status_description",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        4624,
+        -336
+      ],
+      "id": "f3527c8c-1952-45cc-a7b9-1f219ac32bfe",
+      "name": "Google Sheets",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "xQqh9y3onFJAlJij",
+          "name": "Google sheets Aapo"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## Muista valita oikee sheetti ennen poistoa, jos käytät\n\n",
+        "height": 240,
+        "width": 460
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1104,
+        400
+      ],
+      "id": "2d5e34ff-158b-421c-af48-f991eff860e0",
+      "name": "Sticky Note1"
+    },
+    {
+      "parameters": {
+        "url": "=https://api.posti.fi/tracking/7/shipments/waybillnumber/{{ $json[\"Transfer/Tracking Reference\"] }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$('posti external access token').first().json.access_token}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1904,
+        -64
+      ],
+      "id": "21e95ab8-243c-4140-91be-902d4a32c3d4",
+      "name": "gettracking waybill",
+      "alwaysOutputData": false
+    },
+    {
+      "parameters": {
+        "url": "=https://api.posti.fi/tracking/7/shipments/trackingnumbers/{{ $json[\"Transfer/Tracking Reference\"] }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$('posti external access token').first().json.access_token}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2064,
+        -288
+      ],
+      "id": "6cf2aede-62e6-4a42-bef5-c26657f76dd8",
+      "name": "gettracking trackingref"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        1248,
+        -688
+      ],
+      "id": "70ca9fe1-ca47-4b15-90ef-0a12b933341b",
+      "name": "Loop Over Items2"
+    },
+    {
+      "parameters": {
+        "amount": 1
+      },
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        3888,
+        -16
+      ],
+      "id": "7f4680e6-23d1-4afc-98dc-f524749cd82d",
+      "name": "Wait2",
+      "webhookId": "9436dec9-79d8-46ce-843c-f1b98fd94143"
+    },
+    {
+      "parameters": {
+        "mode": "combineBySql",
+        "query": "SELECT DISTINCT\n  input2.Date,\n   input2.OrderDate AS OrderDate,\n  -- input2.OrderReference,\n  input2.Reference,\n  input2.Customer,\n  input2.CustomerReference,\n  -- input2.ProductCategory,\n  input2.Product,\n  -- input2.BatchTransfer,\n  -- input2.FromLocation,\n  -- input2.ToLocation,\n  input2.Carrier,\n  input2.Done,\n  input2.UnitOfMeasure,\n  -- input2.Status,\n  -- input2.TransferState,\n  input2.CustomerContactAddressComplete,\n  input2.CreatedByEmail,\n  input1.tracking_ref AS TrackingReference,\n  input1.status.code AS shipment_status_from_carrier,\n  input1.shipment_status_description\nFROM input2 LEFT JOIN input1 ON input1.tracking_ref = input2.TrackingReference"
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.1,
+      "position": [
+        4432,
+        -336
+      ],
+      "id": "9d6fd82c-ab75-4b32-9071-06274c0cdfff",
+      "name": "Merge2"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "ff0f4caa-f6a0-452d-bdaa-dc81eec34762",
+              "leftValue": "={{ $json[\"Transfer/Tracking Reference\"].toString() }}",
+              "rightValue": "JJFI",
+              "operator": {
+                "type": "string",
+                "operation": "startsWith"
+              }
+            },
+            {
+              "id": "48b27703-c3d8-4057-b79e-b7b73716d614",
+              "leftValue": "={{ $json[\"Transfer/Tracking Reference\"].toString() }}",
+              "rightValue": "00",
+              "operator": {
+                "type": "string",
+                "operation": "startsWith"
+              }
+            }
+          ],
+          "combinator": "or"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1440,
+        -240
+      ],
+      "id": "0bea6e6a-e893-488a-987d-ea95a4b99e50",
+      "name": "If"
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "parcelShipments",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [
+        3152,
+        -224
+      ],
+      "id": "661a599f-31c3-45e1-8e08-70cb1db6b1ef",
+      "name": "Split Out3"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a6abcb2a-3d52-42f3-b046-63a16739cf02",
+              "name": "tracking_ref",
+              "value": "={{ $json.trackingNumber }}",
+              "type": "string"
+            },
+            {
+              "id": "ed3372e8-5c61-437e-8f33-f12663c74bda",
+              "name": "shipment_status_description",
+              "value": "={{ $json.status.description.fi }}",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        3392,
+        -224
+      ],
+      "id": "ea810b45-d37a-45ed-900a-aff4d30fe030",
+      "name": "Edit Fields4"
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "freightShipments",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [
+        3152,
+        -48
+      ],
+      "id": "0cdeec4a-7498-43b7-9484-ef24c1a5efe5",
+      "name": "Split Out4"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a6abcb2a-3d52-42f3-b046-63a16739cf02",
+              "name": "tracking_ref",
+              "value": "={{ $json.waybillNumber }}",
+              "type": "string"
+            },
+            {
+              "id": "a6fdc627-060d-42a4-b064-7dcd0231aacc",
+              "name": "shipment_status_description",
+              "value": "={{ $json.status.description.fi }}",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        3392,
+        -48
+      ],
+      "id": "32906054-0713-46d5-8996-12669d1dff9c",
+      "name": "Edit Fields5"
+    },
+    {
+      "parameters": {
+        "url": "=https://api.gls-group.net/track-and-trace-v1/tracking/simple/references/{{ $json.tracking_refs }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('GLS get access token key').item.json.access_token }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2400,
+        1920
+      ],
+      "id": "533aeacd-76f5-4d4b-8398-e461c562b089",
+      "name": "HTTP GET statuses"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.gls-group.net/oauth2/v2/token",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Basic {{ 'AAaRfITiHAmnm6ScW0F8jAMZSxfH9N5L:A8cdmMjvLg7Agvxd'.base64Encode() }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "grant_type",
+              "value": "client_credentials"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        752,
+        1712
+      ],
+      "id": "84514564-3804-4216-9f0b-144ceb6b7c98",
+      "name": "GLS get access token key",
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.last().json\nconst binaryData = $input.last().binary\n\nlet output = []\n\nObject.keys(binaryData).forEach(b => {\n  let newData = { ...data }  // Clone data to avoid modifying the original object\n  newData.filename = binaryData[b].fileName  // Add filename to json\n\n  output.push({\n    json: newData,\n    binary: { data: binaryData[b] }\n  })\n})\n\nreturn output\n"
+      },
+      "id": "1e9ab33b-81a0-4f0e-a4f8-82880fb9a1e8",
+      "name": "Extract binaries1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        64,
+        1712
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "xlsx",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        352,
+        1712
+      ],
+      "id": "40d21daf-db0c-48d3-aa0c-a39876ff03a9",
+      "name": "Extract from File1"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        1728,
+        1712
+      ],
+      "id": "aabb4971-7611-4a63-a94e-60df03c8026d",
+      "name": "Loop Over Items3"
+    },
+    {
+      "parameters": {
+        "amount": 8
+      },
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        2608,
+        1968
+      ],
+      "id": "e00d5777-fa52-41b4-ba85-2bb0031ac5e8",
+      "name": "Wait3",
+      "webhookId": "88ad9f6d-4002-451e-8d60-c3164f1c9625"
+    },
+    {
+      "parameters": {
+        "mode": "combineBySql",
+        "query": "SELECT DISTINCT\n  input2.Date,\n   input2.OrderDate AS OrderDate,\n  -- input2.OrderReference,\n  input2.Reference,\n  input2.Customer,\n  input2.CustomerReference,\n  -- input2.ProductCategory,\n  input2.Product,\n  -- input2.BatchTransfer,\n  -- input2.FromLocation,\n  -- input2.ToLocation,\n  input2.Carrier,\n  input2.Done,\n  input2.UnitOfMeasure,\n  -- input2.Status,\n  -- input2.TransferState,\n  input2.CustomerContactAddressComplete,\n  input2.CreatedByEmail,\n  input1.tracking_ref AS TrackingReference,\n  input1.status AS shipment_status_from_carrier\nFROM input2 LEFT JOIN input1 ON input1.tracking_ref = input2.TrackingReference"
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.1,
+      "position": [
+        2848,
+        1472
+      ],
+      "id": "12e5fad6-03e4-4b23-9fce-eed0ccc45e60",
+      "name": "Merge3"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a6abcb2a-3d52-42f3-b046-63a16739cf02",
+              "name": "tracking_ref",
+              "value": "={{ $json.requested }}",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        2320,
+        1600
+      ],
+      "id": "517b8a3a-b61a-4b6f-b81b-c802922d51d7",
+      "name": "Edit Fields6"
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "parcels",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [
+        2112,
+        1600
+      ],
+      "id": "b74e1698-1709-4e6b-b0b0-e8ad3632e69a",
+      "name": "Split Out5"
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1RibVi51QOJkP1gscqhMd0fdwlrF79PPs4nnLan1cLU0",
+          "mode": "list",
+          "cachedResultName": "tracking_statuses",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1RibVi51QOJkP1gscqhMd0fdwlrF79PPs4nnLan1cLU0/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "GLS",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1RibVi51QOJkP1gscqhMd0fdwlrF79PPs4nnLan1cLU0/edit#gid=0"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Date": "={{ $json.Date }}",
+            "Reference": "={{ $json['Reference'] }}",
+            "Product": "={{ $json['Product'] }}",
+            "Carrier": "={{ $json['Carrier'] }}",
+            "Done": "={{ $json['Done'] }}",
+            "Customer": "={{ $json[\"Customer\"] }}",
+            "shipment_status_from_carrier": "={{ $json['shipment_status_from_carrier'] }}",
+            "OrderDate": "={{ $json.OrderDate }}",
+            "CustomerReference": "={{ $json.CustomerReference }}",
+            "UnitOfMeasure": "={{ $json.UnitOfMeasure }}",
+            "CustomerContactAddressComplete": "={{ $json.CustomerContactAddressComplete }}",
+            "CreatedByEmail": "={{ $json.CreatedByEmail }}",
+            "TrackingReference": "={{ $json.TrackingReference }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "Date",
+              "displayName": "Date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "OrderDate",
+              "displayName": "OrderDate",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Reference",
+              "displayName": "Reference",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Customer",
+              "displayName": "Customer",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "CustomerReference",
+              "displayName": "CustomerReference",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Product",
+              "displayName": "Product",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Carrier",
+              "displayName": "Carrier",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Done",
+              "displayName": "Done",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "UnitOfMeasure",
+              "displayName": "UnitOfMeasure",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "CustomerContactAddressComplete",
+              "displayName": "CustomerContactAddressComplete",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "CreatedByEmail",
+              "displayName": "CreatedByEmail",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "TrackingReference",
+              "displayName": "TrackingReference",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "shipment_status_from_carrier",
+              "displayName": "shipment_status_from_carrier",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        3072,
+        1472
+      ],
+      "id": "6e8660fe-fff7-4f5a-a4ba-1a4127052ffd",
+      "name": "Google Sheets2",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "xQqh9y3onFJAlJij",
+          "name": "Google sheets Aapo"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "let tracking_refs = [];\nlet group = [];\n\nconst items = $items(\"Extract from File1\");\n\nfor (const item of items) {\n  const raw = item.json['Transfer/Tracking Reference'].toString();\n\n  if (!raw) continue;\n\n  const refs = raw\n    .split(',')\n    .map(ref => ref.trim())\n    .filter(ref => ref && !ref.startsWith('JJFI'));\n\n  for (const ref of refs) {\n    group.push(ref);\n    if (group.length === 10) {\n      tracking_refs.push({ json: { tracking_refs: group } });\n      group = [];\n    }\n  }\n}\n\nif (group.length > 0) {\n  tracking_refs.push({ json: { tracking_refs: group } });\n}\n\nreturn tracking_refs;\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1152,
+        1712
+      ],
+      "id": "27129f44-a15b-4a48-9394-aa80d225fe32",
+      "name": "turn into 10 tracking lists2"
+    },
+    {
+      "parameters": {
+        "content": "## wait 6 sec, because this api has some unknown ratelimit (150 calls in unknown time) which seems to shut down the api key for atleast hours\n",
+        "height": 440,
+        "width": 440
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        2400,
+        1744
+      ],
+      "id": "d368c6df-de62-48c9-857b-b707657eeeeb",
+      "name": "Sticky Note2"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "ac3108c0-347b-4a7e-a185-136ced7fd149",
+              "name": "Date",
+              "value": "={{ $json.Date }}",
+              "type": "number"
+            },
+            {
+              "id": "9c6642e9-2457-4127-997a-fe89d6dd37ed",
+              "name": "OrderDate",
+              "value": "={{ $json[\"Order Date\"] }}",
+              "type": "number"
+            },
+            {
+              "id": "019198c6-bbd2-44e0-abf4-2828628a33ee",
+              "name": "Reference",
+              "value": "={{ $json.Reference }}",
+              "type": "string"
+            },
+            {
+              "id": "3ef45074-1369-470a-a5ad-fdb62ddc67b3",
+              "name": "Customer",
+              "value": "={{ $json.Customer }}",
+              "type": "string"
+            },
+            {
+              "id": "0f8302d9-d6d8-49d1-bd37-9f94ec5f05ec",
+              "name": "CustomerReference",
+              "value": "={{ $json[\"Customer Reference\"] }}",
+              "type": "string"
+            },
+            {
+              "id": "8cd9ece6-195c-40d9-bc9b-af60cf334169",
+              "name": "Product",
+              "value": "={{ $json.Product }}",
+              "type": "string"
+            },
+            {
+              "id": "bba32a78-ae7d-422c-bc0b-58753cff1987",
+              "name": "Carrier",
+              "value": "={{ $json.Carrier }}",
+              "type": "string"
+            },
+            {
+              "id": "7ec0f37d-ca46-417d-9bdd-92e5cd4810eb",
+              "name": "Done",
+              "value": "={{ $json.Done }}",
+              "type": "number"
+            },
+            {
+              "id": "abc3b2c8-c624-454e-b57a-acb2ce3da8a8",
+              "name": "UnitOfMeasure",
+              "value": "={{ $json[\"Unit of Measure\"] }}",
+              "type": "string"
+            },
+            {
+              "id": "0279eee4-ec34-4039-99d2-d496df29cd0a",
+              "name": "CustomerContactAddressComplete",
+              "value": "={{ $json[\"Customer/Contact Address Complete\"] }}",
+              "type": "string"
+            },
+            {
+              "id": "2075aa45-b9a7-485f-ae22-e347193b2e9c",
+              "name": "CreatedByEmail",
+              "value": "={{ $json[\"Created by/Email\"] }}",
+              "type": "string"
+            },
+            {
+              "id": "dbe8427c-4091-4478-87f1-4f4ded0bd42e",
+              "name": "TrackingReference",
+              "value": "={{ $json[\"Transfer/Tracking Reference\"] }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1440,
+        1472
+      ],
+      "id": "8ed3c9f0-5fec-4f1c-b636-335fdf74e251",
+      "name": "Edit Fields7"
+    },
+    {
+      "parameters": {
+        "jsCode": "const output = [];\n\nfor (const item of $input.all()) {\n  const input = item.json;\n\n  let refs = [];\n\n  // If valid string → split into multiple tracking refs\n  if (typeof input.TrackingReference === 'string') {\n    refs = input.TrackingReference\n      .split(',')\n      .map(ref => ref.trim())\n      .filter(Boolean);\n  }\n\n  // If no refs found, push one row with TrackingReference = null\n  if (refs.length === 0) {\n    output.push({\n      json: {\n        ...input,\n        TrackingReference: null\n      }\n    });\n    continue;\n  }\n\n  // Otherwise output one row per tracking ref\n  for (const tracking of refs) {\n    output.push({\n      json: {\n        ...input,\n        TrackingReference: tracking\n      }\n    });\n  }\n}\n\nreturn output;\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1840,
+        1392
+      ],
+      "id": "b06d7a45-3aac-4c2f-b5fc-4aca12b8ae2f",
+      "name": "Code1"
+    },
+    {
+      "parameters": {
+        "content": "part 3 ajo feilas\n\n"
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1360,
+        1920
+      ],
+      "id": "b322da53-afc0-436d-8a4f-646500cd9baa",
+      "name": "Sticky Note3"
+    },
+    {
+      "parameters": {
+        "content": "## DHL\n"
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -528,
+        3328
+      ],
+      "id": "1003201b-3311-40e4-ad70-9446d4af13fb",
+      "name": "Sticky Note4"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://oauth2.posti.com/oauth/token",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {}
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json"
+            },
+            {
+              "name": "authorization",
+              "value": "=Basic {{'ma_09931637_5P:4IbO6pLTuC1vOhi2ipRI'.base64Encode()}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "grant_type",
+              "value": "client_credentials"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -320,
+        -336
+      ],
+      "id": "053b009c-db41-4912-8dce-5ae1a9382f12",
+      "name": "posti public access token1",
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "url": "=https://api.posti.fi/tracking/7/shipments/trackingnumbers/{{ $json[\"Transfer/Tracking Reference\"] }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('posti public access token1').first().json.access_token }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2112,
+        -560
+      ],
+      "id": "349c9379-6c25-47e2-a24e-c84c130d761b",
+      "name": "gettracking1"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c484d4f5-8b05-4946-8d0f-5af2e97eae81",
+              "leftValue": "={{ $json.Carrier }}",
+              "rightValue": "BHGFI",
+              "operator": {
+                "type": "string",
+                "operation": "startsWith"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1760,
+        -336
+      ],
+      "id": "4d732808-330e-4e87-90f8-fe3250f501e6",
+      "name": "If1"
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "parcelShipments, freightShipments",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [
+        2992,
+        -768
+      ],
+      "id": "89f279b4-d1dc-4904-9168-bbcabd8e343e",
+      "name": "Split Out1"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a6abcb2a-3d52-42f3-b046-63a16739cf02",
+              "name": "tracking_ref",
+              "value": "={{ $json.trackingNumber }}",
+              "type": "string"
+            },
+            {
+              "id": "ed3372e8-5c61-437e-8f33-f12663c74bda",
+              "name": "shipment_status_description",
+              "value": "={{ $json.status.description.fi }}",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        3184,
+        -768
+      ],
+      "id": "680817e7-1040-4f31-a1e8-5531a97552fc",
+      "name": "Edit Fields8"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://oauth2.posti.com/oauth/token",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {}
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json"
+            },
+            {
+              "name": "authorization",
+              "value": "=Basic {{'ma_09931637_5P:4IbO6pLTuC1vOhi2ipRI'.base64Encode()}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "grant_type",
+              "value": "client_credentials"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -1776,
+        1360
+      ],
+      "id": "1ebc4f41-8169-4fa2-9428-1eb4857a9278",
+      "name": "posti public access token2",
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "url": "=https://api.posti.fi/tracking/7/shipments/trackingnumbers/JJFI68029950002027559",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $json.access_token }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -1504,
+        1360
+      ],
+      "id": "51234659-16a8-4222-beb0-49cff0047f62",
+      "name": "gettracking2"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://oauth2.posti.com/oauth/token",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {}
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json"
+            },
+            {
+              "name": "authorization",
+              "value": "=Basic {{'ma_09931637_1P:ZatuCE8isPeStlSijl4u'.base64Encode()}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "grant_type",
+              "value": "client_credentials"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -1728,
+        1072
+      ],
+      "id": "47a4315f-3eb3-45b2-8984-a5a7bfa44ff8",
+      "name": "posti external access token1",
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "357351ef-299f-449f-9777-422ed910d99c",
+              "leftValue": "={{ $json.freightShipments }}",
+              "rightValue": "",
+              "operator": {
+                "type": "array",
+                "operation": "exists",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2192,
+        -64
+      ],
+      "id": "4c6e1c90-51b6-45af-b66f-0eabcf693516",
+      "name": "If2"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.parcelShipments }}",
+                    "rightValue": "",
+                    "operator": {
+                      "type": "array",
+                      "operation": "exists",
+                      "singleValue": true
+                    },
+                    "id": "6e0124e6-2f16-412d-9b03-bbc99f11a09f"
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "df71933f-3981-43b7-8de3-2a14d407448f",
+                    "leftValue": "={{ $json.freightShipments }}",
+                    "rightValue": "S-Verkkokauppa:Posti-expressrahti",
+                    "operator": {
+                      "type": "array",
+                      "operation": "exists",
+                      "singleValue": true
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        2864,
+        -144
+      ],
+      "id": "bb8fce0d-bdfe-499d-a423-278253c9a879",
+      "name": "Switch1"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "6d45b95c-b1f1-4186-86c1-9ab513d6f419",
+              "leftValue": "={{ $json.parcelShipments }}",
+              "rightValue": "",
+              "operator": {
+                "type": "array",
+                "operation": "exists",
+                "singleValue": true
+              }
+            },
+            {
+              "id": "1c38dea9-077d-4a11-ac62-b974efc1e87a",
+              "leftValue": "={{ $json.freightShipments }}",
+              "rightValue": "",
+              "operator": {
+                "type": "array",
+                "operation": "exists",
+                "singleValue": true
+              }
+            },
+            {
+              "id": "32dee368-e5b4-4fe3-ae59-2397f9bcbae2",
+              "leftValue": "={{ $json.parcels }}",
+              "rightValue": "",
+              "operator": {
+                "type": "array",
+                "operation": "exists",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "or"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2384,
+        -288
+      ],
+      "id": "7ad0a981-0ba7-4ef5-92f4-01e9a3f55763",
+      "name": "If3"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "5cb85ed6-afaf-4d3d-a9f8-eda1088d7785",
+              "leftValue": "={{ $json.parcelShipments }}",
+              "rightValue": "",
+              "operator": {
+                "type": "array",
+                "operation": "exists",
+                "singleValue": true
+              }
+            },
+            {
+              "id": "1169d440-3199-4c87-abe6-3b7a90ea11cf",
+              "leftValue": "={{ $json.freightShipments }}",
+              "rightValue": "",
+              "operator": {
+                "type": "array",
+                "operation": "exists",
+                "singleValue": true
+              }
+            },
+            {
+              "id": "de94baf5-bf18-47d3-b8f8-f8da01f7d863",
+              "leftValue": "={{ $json.parcels }}",
+              "rightValue": "",
+              "operator": {
+                "type": "array",
+                "operation": "exists",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "or"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2400,
+        -544
+      ],
+      "id": "32603869-5176-4805-b6a7-faa22734e81b",
+      "name": "If4"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1104,
+        -448
+      ],
+      "id": "b193d5e3-7796-428e-8856-fb0f28fe7a97",
+      "name": "No Operation, do nothing"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "8e2f6bad-8cc8-4fb8-bad1-24815010fdbb",
+              "leftValue": "={{ $json[\"Transfer/Tracking Reference\"].toString() }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "exists",
+                "singleValue": true
+              }
+            },
+            {
+              "id": "7638777f-2402-425a-b4f8-7612fa9bd90f",
+              "leftValue": "={{ $json.Carrier }}",
+              "rightValue": "S-Verkkokauppa:Posti-expressrahti",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        928,
+        -560
+      ],
+      "id": "fe40e276-ad8b-47e3-94d6-e8ced0f88c74",
+      "name": "If5"
+    },
+    {
+      "parameters": {
+        "content": "## GLS\n",
+        "height": 260,
+        "width": 480
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -240,
+        1648
+      ],
+      "id": "dde0f5c3-a603-47ce-b5ea-739401f2a084",
+      "name": "Sticky Note"
+    },
+    {
+      "parameters": {
+        "content": "## Posti Glue\n",
+        "height": 260,
+        "width": 480
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -160,
+        432
+      ],
+      "id": "110761d7-bf10-4f4d-b800-04efe4dae9c4",
+      "name": "Sticky Note5"
+    },
+    {
+      "parameters": {
+        "content": "## Posti \n\n",
+        "height": 260,
+        "width": 480
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -496,
+        -416
+      ],
+      "id": "f722b16a-bea8-4931-8d1f-cd319782fb7d",
+      "name": "Sticky Note6"
+    },
+    {
+      "parameters": {
+        "jsCode": "const binaryEntry = $node[\"On form submission\"].binary[\"Files\"];\nlet output = [];\n\nconst newData = {\n  filename: binaryEntry.fileName,\n};\n\noutput.push({\n  json: newData,\n  binary: {\n    data: binaryEntry\n  }\n});\n\nreturn output;"
+      },
+      "id": "2c11b9eb-89d9-4691-9f87-0ea5649daf50",
+      "name": "Extract binaries4",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -240,
+        2544
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "xlsx",
+        "binaryPropertyName": "=data",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        80,
+        2560
+      ],
+      "id": "ba74700d-ed80-497b-bc13-c9631709c17f",
+      "name": "Extract from File4"
+    },
+    {
+      "parameters": {
+        "jsCode": "let tracking_refs = [];\nlet group = [];\n\nconst items = $input.all();\n\nfor (const item of items) {\n  \n  // if (!item.json['Transfer/Tracking Reference']) continue;\n  \n  const raw = item.json[\"Transfer/Tracking Reference\"]+'';\n\n  if (!raw) continue;\n\n  const refs = raw\n    .split(',')\n    .map(ref => ref.trim());\n\n  for (const ref of refs) {\n    let full_ref;\n    if (!ref.startsWith(\"00\")) {\n      full_ref = \"00\" + ref;\n    } else {\n      full_ref = ref;\n    }\n    group.push(full_ref);\n    if (group.length === 10) {\n      tracking_refs.push({ json: { tracking_refs: group } });\n      group = [];\n    }\n  }\n}\n\nif (group.length > 0) {\n  tracking_refs.push({ json: { tracking_refs: group } });\n}\n\nreturn tracking_refs;\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        912,
+        2560
+      ],
+      "id": "308e8c9a-cb17-4158-85dd-c4b3a5056aa7",
+      "name": "turn into 10 tracking lists"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        1120,
+        2560
+      ],
+      "id": "f07edc5d-abe9-4fdb-8ff6-85a981dc0235",
+      "name": "Loop Over Items"
+    },
+    {
+      "parameters": {
+        "jsCode": "const event_code_descriptions = [\n  { code: \"02\", description: \"Electronic advance notice received\" },\n  { code: \"08\", description: \"Picked up from sender\" },\n  { code: \"10\", description: \"Received at departing parcel point\" },\n  { code: \"12\", description: \"Consolidated\" },\n  { code: \"15\", description: \"Received for carriage\" },\n  { code: \"25\", description: \"Loaded for main transport\" },\n  { code: \"35\", description: \"Received at destination terminal\" },\n  { code: \"40\", description: \"Waiting to be loaded for delivery\" },\n  { code: \"41\", description: \"Waiting to be loaded for parcel point\" },\n  { code: \"45\", description: \"Loaded for delivery\" },\n  { code: \"46\", description: \"Loaded for delivery to parcel point\" },\n  { code: \"47\", description: \"Delivered to parcel point\" },\n  { code: \"48\", description: \"Received at parcel point\" },\n  { code: \"50\", description: \"Ready to be collected\" },\n  { code: \"55\", description: \"First arrival notification sent\" },\n  { code: \"56\", description: \"Second arrival notification sent\" },\n  { code: \"57\", description: \"Manual arrival notification sent\" },\n  { code: \"60\", description: \"Handed over to the recipient\" },\n  { code: \"61\", description: \"Handed over to the proxy\" },\n  { code: \"62\", description: \"Handover cancelled\" },\n  { code: \"65\", description: \"COD paid to sender\" },\n  { code: \"70\", description: \"Returned uncollected\" },\n  { code: \"97\", description: \"Delivery attempt unsuccessful\" },\n  { code: \"104\", description: \"Deviation added\" },\n];\n\n// Step 1: Group by shipmentNumber and track latest event\nconst latestEventsByShipment = {};\n\nfor (const item of $input.all()) {\n  const event = item.json;\n  const shipment = event.parcelNumber;\n\n  if (!shipment) continue; // Skip if no shipment number\n\n  const currentLatest = latestEventsByShipment[shipment];\n  const currentTime = new Date(event.eventTime);\n\n  if (!currentLatest || currentTime > new Date(currentLatest.eventTime)) {\n    latestEventsByShipment[shipment] = event;\n  }\n}\n\n// Step 2: Add status_description to each last event\nconst output = [];\n\nfor (const shipment in latestEventsByShipment) {\n  const event = latestEventsByShipment[shipment];\n  const match = event_code_descriptions.find(e => e.code === event.eventCode);\n  if (match) {\n    event.status_description = match.description;\n  }\n  output.push({ json: event });\n}\n\nreturn output;\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2240,
+        2752
+      ],
+      "id": "7c089ca9-a8f3-40d8-a953-8537e8a307a3",
+      "name": "Extract last event and add description"
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "events",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [
+        1904,
+        2752
+      ],
+      "id": "642fbec8-1cf7-40d1-be00-87a76845774d",
+      "name": "Split Out status events"
+    },
+    {
+      "parameters": {
+        "url": "=https://extservices.matkahuolto.fi/mpaketti/public/tracking?ids={{ $json.tracking_refs }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Basic {{ '9403276:y0tfZGwdji'.base64Encode() }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1440,
+        2752
+      ],
+      "id": "6d6628dd-0c45-401c-8d12-1d48a92bf296",
+      "name": "Get tracking status events",
+      "alwaysOutputData": false
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json[\"Transfer/Tracking Reference\"] }}",
+                    "rightValue": "",
+                    "operator": {
+                      "type": "string",
+                      "operation": "exists",
+                      "singleValue": true
+                    },
+                    "id": "224f81a3-5b05-4d34-9aa9-12546d8800d1"
+                  }
+                ],
+                "combinator": "and"
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        320,
+        2560
+      ],
+      "id": "be7897a3-aca3-4545-b926-6b6091d140b1",
+      "name": "Switch2"
+    },
+    {
+      "parameters": {
+        "jsCode": "const seen = new Set();\nconst distinct = [];\n\nfor (const item of $input.all()) {\n  const value = item.json[\"Transfer/Tracking Reference\"];\n  if (!seen.has(value)) {\n    seen.add(value);\n    distinct.push(item);\n  }\n}\n\nreturn distinct;\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        560,
+        2560
+      ],
+      "id": "7f8b2d5f-597d-4eab-851e-5c0966797164",
+      "name": "get distinct tracking refs"
+    },
+    {
+      "parameters": {
+        "amount": 2
+      },
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        2464,
+        2752
+      ],
+      "id": "219673b5-8d34-48e3-a3b8-827b1df22d38",
+      "name": "Wait",
+      "webhookId": "6868dbad-b9dc-4741-8d53-12d55b2af685"
+    },
+    {
+      "parameters": {
+        "mode": "combineBySql",
+        "query": "SELECT DISTINCT\n  input2.Date AS Date,\n   input2.OrderDate AS OrderDate,\n  -- input2.OrderReference,\n  input2.Reference,\n  input2.Customer,\n  input2.CustomerReference,\n  -- input2.ProductCategory,\n  input2.Product,\n  -- input2.BatchTransfer,\n  -- input2.FromLocation,\n  -- input2.ToLocation,\n  input2.Carrier,\n  input2.Done,\n  input2.UnitOfMeasure,\n  -- input2.Status,\n  -- input2.TransferState,\n  input2.CustomerContactAddressComplete,\n  input2.CreatedByEmail,\n input2.TrackingReference AS TrackingReference,\n  COALESCE(input1.status_description,\"Status was not found through api\") AS shipment_status_from_carrier\nFROM input2 LEFT JOIN input1 ON input1.parcelNumber = input2.TrackingReference"
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.1,
+      "position": [
+        2032,
+        2480
+      ],
+      "id": "748dcdec-5364-4526-ae7d-d500715409e5",
+      "name": "Merge4"
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1RibVi51QOJkP1gscqhMd0fdwlrF79PPs4nnLan1cLU0",
+          "mode": "list",
+          "cachedResultName": "tracking_statuses",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1RibVi51QOJkP1gscqhMd0fdwlrF79PPs4nnLan1cLU0/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 1976584426,
+          "mode": "list",
+          "cachedResultName": "Matkahuolto",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1RibVi51QOJkP1gscqhMd0fdwlrF79PPs4nnLan1cLU0/edit#gid=1976584426"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Date": "={{ $json.Date }}",
+            "Reference": "={{ $json['Reference'] }}",
+            "Product": "={{ $json['Product'] }}",
+            "Carrier": "={{ $json['Carrier'] }}",
+            "Done": "={{ $json['Done'] }}",
+            "Customer": "={{ $json[\"Customer\"] }}",
+            "shipment_status_from_carrier": "={{ $json['shipment_status_from_carrier'] }}",
+            "OrderDate": "={{ $json.OrderDate }}",
+            "CustomerReference": "={{ $json.CustomerReference }}",
+            "UnitOfMeasure": "={{ $json.UnitOfMeasure }}",
+            "CustomerContactAddressComplete": "={{ $json.CustomerContactAddressComplete }}",
+            "CreatedByEmail": "={{ $json.CreatedByEmail }}",
+            "TrackingReference": "={{ $json.TrackingReference }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "Date",
+              "displayName": "Date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "OrderDate",
+              "displayName": "OrderDate",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Reference",
+              "displayName": "Reference",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Customer",
+              "displayName": "Customer",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "CustomerReference",
+              "displayName": "CustomerReference",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Product",
+              "displayName": "Product",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Carrier",
+              "displayName": "Carrier",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Done",
+              "displayName": "Done",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "UnitOfMeasure",
+              "displayName": "UnitOfMeasure",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "CustomerContactAddressComplete",
+              "displayName": "CustomerContactAddressComplete",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "CreatedByEmail",
+              "displayName": "CreatedByEmail",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "TrackingReference",
+              "displayName": "TrackingReference",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "shipment_status_from_carrier",
+              "displayName": "shipment_status_from_carrier",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        2448,
+        2464
+      ],
+      "id": "92bc1c50-dbcf-4745-aa7a-de0b38b0f12c",
+      "name": "Google Sheets3",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "xQqh9y3onFJAlJij",
+          "name": "Google sheets Aapo"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "ac3108c0-347b-4a7e-a185-136ced7fd149",
+              "name": "Date",
+              "value": "={{ new Date(Math.round((Number($json.Date) - 25569) * 86400 * 1000)).toISOString() }}",
+              "type": "string"
+            },
+            {
+              "id": "9c6642e9-2457-4127-997a-fe89d6dd37ed",
+              "name": "OrderDate",
+              "value": "={{ new Date(Math.round((Number($json[\"Order Date\"]) - 25569) * 86400 * 1000)).toISOString() }}",
+              "type": "string"
+            },
+            {
+              "id": "019198c6-bbd2-44e0-abf4-2828628a33ee",
+              "name": "Reference",
+              "value": "={{ $json.Reference }}",
+              "type": "string"
+            },
+            {
+              "id": "3ef45074-1369-470a-a5ad-fdb62ddc67b3",
+              "name": "Customer",
+              "value": "={{ $json.Customer }}",
+              "type": "string"
+            },
+            {
+              "id": "0f8302d9-d6d8-49d1-bd37-9f94ec5f05ec",
+              "name": "CustomerReference",
+              "value": "={{ $json[\"Customer Reference\"] }}",
+              "type": "string"
+            },
+            {
+              "id": "8cd9ece6-195c-40d9-bc9b-af60cf334169",
+              "name": "Product",
+              "value": "={{ $json.Product }}",
+              "type": "string"
+            },
+            {
+              "id": "bba32a78-ae7d-422c-bc0b-58753cff1987",
+              "name": "Carrier",
+              "value": "={{ $json.Carrier }}",
+              "type": "string"
+            },
+            {
+              "id": "7ec0f37d-ca46-417d-9bdd-92e5cd4810eb",
+              "name": "Done",
+              "value": "={{ $json.Done }}",
+              "type": "number"
+            },
+            {
+              "id": "abc3b2c8-c624-454e-b57a-acb2ce3da8a8",
+              "name": "UnitOfMeasure",
+              "value": "={{ $json[\"Unit of Measure\"] }}",
+              "type": "string"
+            },
+            {
+              "id": "0279eee4-ec34-4039-99d2-d496df29cd0a",
+              "name": "CustomerContactAddressComplete",
+              "value": "={{ $json[\"Customer/Contact Address Complete\"] }}",
+              "type": "string"
+            },
+            {
+              "id": "2075aa45-b9a7-485f-ae22-e347193b2e9c",
+              "name": "CreatedByEmail",
+              "value": "={{ $json[\"Created by/Email\"] }}",
+              "type": "string"
+            },
+            {
+              "id": "dbe8427c-4091-4478-87f1-4f4ded0bd42e",
+              "name": "TrackingReference",
+              "value": "={{ $json[\"Transfer/Tracking Reference\"] }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        352,
+        2352
+      ],
+      "id": "80234866-1a1d-4059-ada4-5dded3334405",
+      "name": "Edit Fields9"
+    },
+    {
+      "parameters": {
+        "jsCode": "const output = [];\n\nfor (const item of $input.all()) {\n  const input = item.json;\n\n  let refs = [];\n\n  // If valid string → split into multiple tracking refs\n  if (typeof input.TrackingReference === 'string') {\n    refs = input.TrackingReference\n      .split(',')\n      .map(ref => ref.trim())\n      .filter(Boolean);\n  }\n\n  // If no refs found, push one row with TrackingReference = null\n  if (refs.length === 0) {\n    output.push({\n      json: {\n        ...input,\n        TrackingReference: null\n      }\n    });\n    continue;\n  }\n\n  // Otherwise output one row per tracking ref\n  for (const tracking of refs) {\n    output.push({\n      json: {\n        ...input,\n        TrackingReference: \"00\"+tracking\n      }\n    });\n  }\n}\n\nreturn output;\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        704,
+        2224
+      ],
+      "id": "7f850552-a0f1-484a-a6e5-c04faa5e8236",
+      "name": "Code2"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "55632380-b5f8-4743-90cd-c716dfdd2f32",
+              "leftValue": "={{ $json.events.length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1664,
+        2752
+      ],
+      "id": "220a3ef4-ed30-4f76-bb89-7f91d86f052f",
+      "name": "If6"
+    },
+    {
+      "parameters": {
+        "url": "=https://extservices.matkahuolto.fi/mpaketti/public/tracking?ids=373325385778565328",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Basic {{ '9403276:y0tfZGwdji'.base64Encode() }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -1584,
+        2688
+      ],
+      "id": "2f415741-b844-4f4c-b564-0c1107b6263a",
+      "name": "Get tracking status events1",
+      "alwaysOutputData": false
+    },
+    {
+      "parameters": {
+        "content": "## Matkahuolto",
+        "height": 220,
+        "width": 320
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -448,
+        2464
+      ],
+      "id": "e3d8c9bc-69a8-4577-9665-265579d67b30",
+      "name": "Sticky Note7"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "46b096f3-95e3-4b87-b67b-21acb82271f4",
+              "leftValue": "={{ $json.parcelShipments }}",
+              "rightValue": "",
+              "operator": {
+                "type": "array",
+                "operation": "exists",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1920,
+        624
+      ],
+      "id": "bcde7b5e-90b2-4084-92ab-e463b718db69",
+      "name": "If7"
+    },
+    {
+      "parameters": {
+        "url": "=https://api-eu.dhl.com/track/shipments?trackingNumber={{ $json.tracking_ref }}",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {}
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "DHL-API-Key",
+              "value": "MC4grRiZ7dDsokW2ltPG1Qfj17d0enZA"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        704,
+        3440
+      ],
+      "id": "5e9b5b4e-4e15-4ba2-b964-1d3b95283b44",
+      "name": "HTTP Request",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.last().json\nconst binaryData = $input.last().binary\n\nlet output = []\n\nObject.keys(binaryData).forEach(b => {\n  let newData = { ...data }  // Clone data to avoid modifying the original object\n  newData.filename = binaryData[b].fileName  // Add filename to json\n\n  output.push({\n    json: newData,\n    binary: { data: binaryData[b] }\n  })\n})\n\nreturn output\n"
+      },
+      "id": "e98623d5-79a9-4fc4-bdde-9c2c0e70ffb7",
+      "name": "Extract binaries3",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -400,
+        3344
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "xlsx",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        -128,
+        3344
+      ],
+      "id": "53485d3b-57c6-46c8-9c89-c64fd44c8c99",
+      "name": "Extract from File3"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        448,
+        3424
+      ],
+      "id": "9a1f479a-4daf-4b48-aa65-d716d7400a83",
+      "name": "Loop Over Items4"
+    },
+    {
+      "parameters": {
+        "amount": 6
+      },
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        1184,
+        3472
+      ],
+      "id": "2ecc0823-63b0-44c4-8baa-c19f02412c8c",
+      "name": "Wait4",
+      "webhookId": "d2b3c0f0-ab2b-43af-848a-6d57101a30a7"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        704,
+        3312
+      ],
+      "id": "3f8824bb-57fb-4cc3-a871-454ade7c092b",
+      "name": "No Operation, do nothing2"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "ac3108c0-347b-4a7e-a185-136ced7fd149",
+              "name": "Date",
+              "value": "={{ new Date(Math.round((Number($json.Date) - 25569) * 86400 * 1000)).toISOString() }}",
+              "type": "string"
+            },
+            {
+              "id": "9c6642e9-2457-4127-997a-fe89d6dd37ed",
+              "name": "OrderDate",
+              "value": "={{ new Date(Math.round((Number($json[\"Order Date\"]) - 25569) * 86400 * 1000)).toISOString() }}",
+              "type": "string"
+            },
+            {
+              "id": "019198c6-bbd2-44e0-abf4-2828628a33ee",
+              "name": "Reference",
+              "value": "={{ $json.Reference }}",
+              "type": "string"
+            },
+            {
+              "id": "3ef45074-1369-470a-a5ad-fdb62ddc67b3",
+              "name": "Customer",
+              "value": "={{ $json.Customer }}",
+              "type": "string"
+            },
+            {
+              "id": "0f8302d9-d6d8-49d1-bd37-9f94ec5f05ec",
+              "name": "CustomerReference",
+              "value": "={{ $json[\"Customer Reference\"] }}",
+              "type": "string"
+            },
+            {
+              "id": "8cd9ece6-195c-40d9-bc9b-af60cf334169",
+              "name": "Product",
+              "value": "={{ $json.Product }}",
+              "type": "string"
+            },
+            {
+              "id": "bba32a78-ae7d-422c-bc0b-58753cff1987",
+              "name": "Carrier",
+              "value": "={{ $json.Carrier }}",
+              "type": "string"
+            },
+            {
+              "id": "7ec0f37d-ca46-417d-9bdd-92e5cd4810eb",
+              "name": "Done",
+              "value": "={{ $json.Done }}",
+              "type": "number"
+            },
+            {
+              "id": "abc3b2c8-c624-454e-b57a-acb2ce3da8a8",
+              "name": "UnitOfMeasure",
+              "value": "={{ $json[\"Unit of Measure\"] }}",
+              "type": "string"
+            },
+            {
+              "id": "0279eee4-ec34-4039-99d2-d496df29cd0a",
+              "name": "CustomerContactAddressComplete",
+              "value": "={{ $json[\"Customer/Contact Address Complete\"] }}",
+              "type": "string"
+            },
+            {
+              "id": "2075aa45-b9a7-485f-ae22-e347193b2e9c",
+              "name": "CreatedByEmail",
+              "value": "={{ $json[\"Customer/Email\"] }}",
+              "type": "string"
+            },
+            {
+              "id": "dbe8427c-4091-4478-87f1-4f4ded0bd42e",
+              "name": "TrackingReference",
+              "value": "={{ $json[\"Transfer/Tracking Reference\"] }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        400,
+        3104
+      ],
+      "id": "0caa8565-0b9a-44e6-8f18-a93af5883e07",
+      "name": "Edit Fields10"
+    },
+    {
+      "parameters": {
+        "jsCode": "const output = [];\n\nfor (const item of $input.all()) {\n  const input = item.json;\n\n  let refs = [];\n\n  // If valid string → split into multiple tracking refs\n  if (typeof input.TrackingReference === 'string') {\n    refs = input.TrackingReference\n      .split(',')\n      .map(ref => ref.trim())\n      .filter(Boolean);\n  }\n\n  // If no refs found, push one row with TrackingReference = null\n  if (refs.length === 0) {\n    output.push({\n      json: {\n        ...input,\n        TrackingReference: null\n      }\n    });\n    continue;\n  }\n\n  // Otherwise output one row per tracking ref\n  for (const tracking of refs) {\n    output.push({\n      json: {\n        ...input,\n        TrackingReference: tracking\n      }\n    });\n  }\n}\n\nreturn output;\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        800,
+        3024
+      ],
+      "id": "df82cb00-6329-49cf-9f8e-d68f1130a52a",
+      "name": "Code3"
+    },
+    {
+      "parameters": {
+        "mode": "combineBySql",
+        "query": "SELECT DISTINCT\n  input2.Date,\n   input2.OrderDate AS OrderDate,\n  -- input2.OrderReference,\n  input2.Reference,\n  input2.Customer,\n  input2.CustomerReference,\n  -- input2.ProductCategory,\n  input2.Product,\n  -- input2.BatchTransfer,\n  -- input2.FromLocation,\n  -- input2.ToLocation,\n  input2.Carrier,\n  input2.Done,\n  input2.UnitOfMeasure,\n  -- input2.Status,\n  -- input2.TransferState,\n  input2.CustomerContactAddressComplete,\n  input2.CreatedByEmail,\n  input2.TrackingReference AS TrackingReference,\n  input1.status AS shipment_status_from_carrier,\n  input1.status_description AS shipment_status_description\nFROM input2 LEFT JOIN input1 ON input1.tracking_ref = input2.TrackingReference"
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.1,
+      "position": [
+        2512,
+        3328
+      ],
+      "id": "71b9ba2c-ec59-4073-b81c-8e8409375441",
+      "name": "Merge5"
+    },
+    {
+      "parameters": {
+        "jsCode": "let distinct_trackings = [];\nfor (const item of $input.all()) {\n  if(!item.json[\"Transfer/Tracking Reference\"]) {\n    continue;\n  }\n  let trackings = item.json[\"Transfer/Tracking Reference\"].toString().split(\",\")\n  for (let tracking of trackings) {\n    if(!tracking.toString().startsWith(\"00\")){\n      tracking = \"00\"+tracking \n    }\n\n    if (!distinct_trackings.find(t => t.tracking_ref === tracking)) {\n      distinct_trackings.push({ tracking_ref: tracking });\n    }\n  }\n  \n}\n\nreturn distinct_trackings;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        128,
+        3344
+      ],
+      "id": "fcf30edb-7ddc-4637-abde-e00d8ebaeb05",
+      "name": "Code4"
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "shipments",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [
+        752,
+        3168
+      ],
+      "id": "417e8495-16f9-4f16-b2d3-8ffafb3338c2",
+      "name": "Split Out2"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a9614d1c-9d05-4053-8dac-5b398481c561",
+              "name": "tracking_ref",
+              "value": "={{ $('Loop Over Items4').item.json.tracking_ref }}",
+              "type": "string"
+            },
+            {
+              "id": "16b8b9c1-dc36-4147-ad2b-e4ace7fbf750",
+              "name": "status",
+              "value": "={{ $json.shipments[0].status.statusCode }}",
+              "type": "string"
+            },
+            {
+              "id": "0ed485e7-5d35-4d69-a6d6-99087f02af36",
+              "name": "status_description",
+              "value": "={{ $json.shipments[0].status.description }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        944,
+        3440
+      ],
+      "id": "4184224e-a0bd-41cb-b0cd-67751cac792f",
+      "name": "Edit Fields3"
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1RibVi51QOJkP1gscqhMd0fdwlrF79PPs4nnLan1cLU0",
+          "mode": "list",
+          "cachedResultName": "tracking_statuses",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1RibVi51QOJkP1gscqhMd0fdwlrF79PPs4nnLan1cLU0/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 1418291527,
+          "mode": "list",
+          "cachedResultName": "DHL",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1RibVi51QOJkP1gscqhMd0fdwlrF79PPs4nnLan1cLU0/edit#gid=1418291527"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Date": "={{ $json.Date }}",
+            "Reference": "={{ $json['Reference'] }}",
+            "Product": "={{ $json['Product'] }}",
+            "Carrier": "={{ $json['Carrier'] }}",
+            "Done": "={{ $json['Done'] }}",
+            "Customer": "={{ $json[\"Customer\"] }}",
+            "shipment_status_from_carrier": "={{ $json['shipment_status_from_carrier'] }}",
+            "OrderDate": "={{ $json.OrderDate }}",
+            "CustomerReference": "={{ $json.CustomerReference }}",
+            "UnitOfMeasure": "={{ $json.UnitOfMeasure }}",
+            "CustomerContactAddressComplete": "={{ $json.CustomerContactAddressComplete }}",
+            "CreatedByEmail": "={{ $json.CreatedByEmail }}",
+            "TrackingReference": "={{ $json.TrackingReference }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "Date",
+              "displayName": "Date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "OrderDate",
+              "displayName": "OrderDate",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Reference",
+              "displayName": "Reference",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Customer",
+              "displayName": "Customer",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "CustomerReference",
+              "displayName": "CustomerReference",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Product",
+              "displayName": "Product",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Carrier",
+              "displayName": "Carrier",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Done",
+              "displayName": "Done",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "UnitOfMeasure",
+              "displayName": "UnitOfMeasure",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "CustomerContactAddressComplete",
+              "displayName": "CustomerContactAddressComplete",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "CreatedByEmail",
+              "displayName": "CreatedByEmail",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "TrackingReference",
+              "displayName": "TrackingReference",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "shipment_status_from_carrier",
+              "displayName": "shipment_status_from_carrier",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        2752,
+        3328
+      ],
+      "id": "47897fdb-a034-469a-9728-f91c23d1534e",
+      "name": "Google Sheets4",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "xQqh9y3onFJAlJij",
+          "name": "Google sheets Aapo"
+        }
+      }
+    }
+  ],
+  "pinData": {
+    "Wait3": [
+      {
+        "json": {
+          "parcels": [
+            {
+              "requested": "903288563337",
+              "unitno": "90328856333",
+              "status": "DELIVERED",
+              "statusDateTime": "2025-05-22T17:57:04+0200",
+              "events": [
+                {
+                  "code": "DELIVD.NORMAL",
+                  "city": "",
+                  "postalCode": "",
+                  "country": "SE",
+                  "description": "The parcel has been delivered.",
+                  "eventDateTime": "2025-05-22T17:57:04+0200"
+                },
+                {
+                  "code": "DELIVD.PARCELSHOP",
+                  "city": "",
+                  "postalCode": "",
+                  "country": "SE",
+                  "description": "The parcel has been delivered at the ParcelShop (see ParcelShop information).",
+                  "eventDateTime": "2025-05-22T09:15:56+0200"
+                },
+                {
+                  "code": "INBOUD.PARCELSHOP",
+                  "city": "",
+                  "postalCode": "",
+                  "country": "SE",
+                  "description": "The parcel has reached the ParcelShop.",
+                  "eventDateTime": "2025-05-22T09:04:42+0200"
+                },
+                {
+                  "code": "OUTDEL.NORMAL",
+                  "city": "",
+                  "postalCode": "",
+                  "country": "SE",
+                  "description": "The parcel is expected to be delivered during the day.",
+                  "eventDateTime": "2025-05-22T08:45:37+0200"
+                },
+                {
+                  "code": "INBOUD.NORMAL",
+                  "city": "",
+                  "postalCode": "",
+                  "country": "SE",
+                  "description": "The parcel has reached the parcel center.",
+                  "eventDateTime": "2025-05-22T02:45:13+0200"
+                },
+                {
+                  "code": "INBOUD.NORMAL",
+                  "city": "",
+                  "postalCode": "",
+                  "country": "SE",
+                  "description": "The parcel has reached the parcel center.",
+                  "eventDateTime": "2025-05-21T15:21:55+0200"
+                },
+                {
+                  "code": "OUTBOD.NORMAL",
+                  "city": "",
+                  "postalCode": "",
+                  "country": "FI",
+                  "description": "The parcel has left the parcel center.",
+                  "eventDateTime": "2025-05-20T18:04:46+0200"
+                },
+                {
+                  "code": "INTIAL.NORMAL",
+                  "city": "",
+                  "postalCode": "",
+                  "country": "FI",
+                  "description": "The parcel was handed over to GLS.",
+                  "eventDateTime": "2025-05-20T18:04:45+0200"
+                },
+                {
+                  "code": "INTIAL.PREADVICE",
+                  "city": "",
+                  "postalCode": "",
+                  "country": "FI",
+                  "description": "The parcel data was entered into the GLS IT system; the parcel was not yet handed over to GLS.",
+                  "eventDateTime": "2025-05-19T16:43:41+0200"
+                }
+              ]
+            },
+            {
+              "requested": "903288514858",
+              "unitno": "90328851485",
+              "status": "DELIVERED",
+              "statusDateTime": "2025-05-21T15:27:49+0200",
+              "events": [
+                {
+                  "code": "DELIVD.NORMAL",
+                  "city": "",
+                  "postalCode": "",
+                  "country": "SE",
+                  "description": "The parcel has been delivered.",
+                  "eventDateTime": "2025-05-21T15:27:49+0200"
+                },
+                {
+                  "code": "DELIVD.PARCELSHOP",
+                  "city": "",
+                  "postalCode": "",
+                  "country": "SE",
+                  "description": "The parcel has been delivered at the ParcelShop (see ParcelShop information).",
+                  "eventDateTime": "2025-05-20T15:48:29+0200"
+                },
+                {
+                  "code": "INBOUD.PARCELSHOP",
+                  "city": "",
+                  "postalCode": "",
+                  "country": "SE",
+                  "description": "The parcel has reached the ParcelShop.",
+                  "eventDateTime": "2025-05-20T10:52:54+0200"
+                },
+                {
+                  "code": "OUTDEL.NORMAL",
+                  "city": "",
+                  "postalCode": "",
+                  "country": "SE",
+                  "description": "The parcel is expected to be delivered during the day.",
+                  "eventDateTime": "2025-05-20T09:29:42+0200"
+                },
+                {
+                  "code": "INBOUD.NORMAL",
+                  "city": "",
+                  "postalCode": "",
+                  "country": "SE",
+                  "description": "The parcel has reached the parcel center.",
+                  "eventDateTime": "2025-05-19T14:35:25+0200"
+                },
+                {
+                  "code": "OUTBOD.NORMAL",
+                  "city": "",
+                  "postalCode": "",
+                  "country": "FI",
+                  "description": "The parcel has left the parcel center.",
+                  "eventDateTime": "2025-05-16T19:06:10+0200"
+                },
+                {
+                  "code": "INTIAL.NORMAL",
+                  "city": "",
+                  "postalCode": "",
+                  "country": "FI",
+                  "description": "The parcel was handed over to GLS.",
+                  "eventDateTime": "2025-05-16T19:06:09+0200"
+                },
+                {
+                  "code": "INTIAL.PREADVICE",
+                  "city": "",
+                  "postalCode": "",
+                  "country": "FI",
+                  "description": "The parcel data was entered into the GLS IT system; the parcel was not yet handed over to GLS.",
+                  "eventDateTime": "2025-05-14T19:35:13+0200"
+                }
+              ]
+            },
+            {
+              "requested": "903288540307",
+              "unitno": "90328854030",
+              "status": "DELIVERED",
+              "statusDateTime": "2025-05-26T11:03:42+0200",
+              "events": [
+                {
+                  "code": "DELIVD.NORMAL",
+                  "city": "",
+                  "postalCode": "",
+                  "country": "SE",
+                  "description": "The parcel has been delivered.",
+                  "eventDateTime": "2025-05-26T11:03:42+0200"
+                },
+                {
+                  "code": "OUTDEL.NORMAL",
+                  "city": "",
+                  "postalCode": "",
+                  "country": "SE",
+                  "description": "The parcel is expected to be delivered during the day.",
+                  "eventDateTime": "2025-05-26T08:08:46+0200"
+                },
+                {
+                  "code": "WHOUSE.NORMAL",
+                  "city": "",
+                  "postalCode": "",
+                  "country": "SE",
+                  "description": "The parcel is stored in the parcel center.",
+                  "eventDateTime": "2025-05-23T06:48:40+0200"
+                },
+                {
+                  "code": "WHOUSE.NORMAL",
+                  "city": "",
+                  "postalCode": "",
+                  "country": "SE",
+                  "description": "The parcel is stored in the parcel center.",
+                  "eventDateTime": "2025-05-22T05:33:09+0200"
+                },
+                {
+                  "code": "INBOUD.NORMAL",
+                  "city": "",
+                  "postalCode": "",
+                  "country": "SE",
+                  "description": "The parcel has reached the parcel center.",
+                  "eventDateTime": "2025-05-22T03:17:25+0200"
+                },
+                {
+                  "code": "VOLPCL.NC DIM EXC",
+                  "city": "",
+                  "postalCode": "",
+                  "country": "SE",
+                  "description": "The parcel has reached the parcel center and was sorted manually.",
+                  "eventDateTime": "2025-05-21T13:49:31+0200"
+                },
+                {
+                  "code": "INBOUD.NORMAL",
+                  "city": "",
+                  "postalCode": "",
+                  "country": "SE",
+                  "description": "The parcel has reached the parcel center.",
+                  "eventDateTime": "2025-05-21T13:48:31+0200"
+                },
+                {
+                  "code": "OUTBOD.NORMAL",
+                  "city": "",
+                  "postalCode": "",
+                  "country": "FI",
+                  "description": "The parcel has left the parcel center.",
+                  "eventDateTime": "2025-05-20T19:25:53+0200"
+                },
+                {
+                  "code": "INTIAL.NORMAL",
+                  "city": "",
+                  "postalCode": "",
+                  "country": "FI",
+                  "description": "The parcel was handed over to GLS.",
+                  "eventDateTime": "2025-05-20T19:25:52+0200"
+                },
+                {
+                  "code": "INTIAL.PREADVICE",
+                  "city": "",
+                  "postalCode": "",
+                  "country": "FI",
+                  "description": "The parcel data was entered into the GLS IT system; the parcel was not yet handed over to GLS.",
+                  "eventDateTime": "2025-05-16T13:26:23+0200"
+                }
+              ]
+            },
+            {
+              "requested": "903288495126",
+              "unitno": "90328849512",
+              "status": "DELIVERED",
+              "statusDateTime": "2025-05-23T18:07:33+0200",
+              "events": [
+                {
+                  "code": "DELIVD.NORMAL",
+                  "city": "",
+                  "postalCode": "",
+                  "country": "SE",
+                  "description": "The parcel has been delivered.",
+                  "eventDateTime": "2025-05-23T18:07:33+0200"
+                },
+                {
+                  "code": "DELIVD.PARCELSHOP",
+                  "city": "",
+                  "postalCode": "",
+                  "country": "SE",
+                  "description": "The parcel has been delivered at the ParcelShop (see ParcelShop information).",
+                  "eventDateTime": "2025-05-16T11:15:11+0200"
+                },
+                {
+                  "code": "INBOUD.PARCELSHOP",
+                  "city": "",
+                  "postalCode": "",
+                  "country": "SE",
+                  "description": "The parcel has reached the ParcelShop.",
+                  "eventDateTime": "2025-05-16T10:55:11+0200"
+                },
+                {
+                  "code": "OUTDEL.NORMAL",
+                  "city": "",
+                  "postalCode": "",
+                  "country": "SE",
+                  "description": "The parcel is expected to be delivered during the day.",
+                  "eventDateTime": "2025-05-16T09:47:12+0200"
+                },
+                {
+                  "code": "INBOUD.NORMAL",
+                  "city": "",
+                  "postalCode": "",
+                  "country": "SE",
+                  "description": "The parcel has reached the parcel center.",
+                  "eventDateTime": "2025-05-16T01:10:13+0200"
+                },
+                {
+                  "code": "INBOUD.NORMAL",
+                  "city": "",
+                  "postalCode": "",
+                  "country": "SE",
+                  "description": "The parcel has reached the parcel center.",
+                  "eventDateTime": "2025-05-15T15:49:26+0200"
+                },
+                {
+                  "code": "OUTBOD.NORMAL",
+                  "city": "",
+                  "postalCode": "",
+                  "country": "FI",
+                  "description": "The parcel has left the parcel center.",
+                  "eventDateTime": "2025-05-14T19:19:22+0200"
+                },
+                {
+                  "code": "INTIAL.NORMAL",
+                  "city": "",
+                  "postalCode": "",
+                  "country": "FI",
+                  "description": "The parcel was handed over to GLS.",
+                  "eventDateTime": "2025-05-14T19:19:21+0200"
+                },
+                {
+                  "code": "INTIAL.PREADVICE",
+                  "city": "",
+                  "postalCode": "",
+                  "country": "FI",
+                  "description": "The parcel data was entered into the GLS IT system; the parcel was not yet handed over to GLS.",
+                  "eventDateTime": "2025-05-13T15:40:50+0200"
+                }
+              ]
+            },
+            {
+              "requested": "903288514889",
+              "unitno": "90328851488",
+              "status": "DELIVERED",
+              "statusDateTime": "2025-05-26T14:37:54+0200",
+              "events": [
+                {
+                  "code": "DELIVD.NORMAL",
+                  "city": "",
+                  "postalCode": "",
+                  "country": "SE",
+                  "description": "The parcel has been delivered.",
+                  "eventDateTime": "2025-05-26T14:37:54+0200"
+                },
+                {
+                  "code": "DELIVD.PARCELSHOP",
+                  "city": "",
+                  "postalCode": "",
+                  "country": "SE",
+                  "description": "The parcel has been delivered at the ParcelShop (see ParcelShop information).",
+                  "eventDateTime": "2025-05-26T11:44:23+0200"
+                },
+                {
+                  "code": "INBOUD.PARCELSHOP",
+                  "city": "",
+                  "postalCode": "",
+                  "country": "SE",
+                  "description": "The parcel has reached the ParcelShop.",
+                  "eventDateTime": "2025-05-26T10:25:35+0200"
+                },
+                {
+                  "code": "INBOUD.NORMAL",
+                  "city": "",
+                  "postalCode": "",
+                  "country": "SE",
+                  "description": "The parcel has reached the parcel center.",
+                  "eventDateTime": "2025-05-26T00:06:34+0200"
+                },
+                {
+                  "code": "INBOUD.NORMAL",
+                  "city": "",
+                  "postalCode": "",
+                  "country": "SE",
+                  "description": "The parcel has reached the parcel center.",
+                  "eventDateTime": "2025-05-23T17:31:20+0200"
+                },
+                {
+                  "code": "OUTDEL.NORMAL",
+                  "city": "",
+                  "postalCode": "",
+                  "country": "SE",
+                  "description": "The parcel is expected to be delivered during the day.",
+                  "eventDateTime": "2025-05-22T07:43:32+0200"
+                },
+                {
+                  "code": "INBOUD.NORMAL",
+                  "city": "",
+                  "postalCode": "",
+                  "country": "SE",
+                  "description": "The parcel has reached the parcel center.",
+                  "eventDateTime": "2025-05-22T00:54:59+0200"
+                },
+                {
+                  "code": "INBOUD.NORMAL",
+                  "city": "",
+                  "postalCode": "",
+                  "country": "SE",
+                  "description": "The parcel has reached the parcel center.",
+                  "eventDateTime": "2025-05-21T15:22:19+0200"
+                },
+                {
+                  "code": "OUTBOD.NORMAL",
+                  "city": "",
+                  "postalCode": "",
+                  "country": "FI",
+                  "description": "The parcel has left the parcel center.",
+                  "eventDateTime": "2025-05-20T19:36:45+0200"
+                },
+                {
+                  "code": "INTIAL.NORMAL",
+                  "city": "",
+                  "postalCode": "",
+                  "country": "FI",
+                  "description": "The parcel was handed over to GLS.",
+                  "eventDateTime": "2025-05-20T19:36:44+0200"
+                },
+                {
+                  "code": "INTIAL.PREADVICE",
+                  "city": "",
+                  "postalCode": "",
+                  "country": "FI",
+                  "description": "The parcel data was entered into the GLS IT system; the parcel was not yet handed over to GLS.",
+                  "eventDateTime": "2025-05-14T19:35:13+0200"
+                }
+              ]
+            },
+            {
+              "requested": "903288436655",
+              "unitno": "90328843665",
+              "status": "DELIVERED",
+              "statusDateTime": "2025-05-13T09:36:57+0200",
+              "events": [
+                {
+                  "code": "DELIVD.NORMAL",
+                  "city": "",
+                  "postalCode": "",
+                  "country": "DE",
+                  "description": "The parcel has been delivered.",
+                  "eventDateTime": "2025-05-13T09:36:57+0200"
+                },
+                {
+                  "code": "OUTDEL.NORMAL",
+                  "city": "",
+                  "postalCode": "",
+                  "country": "DE",
+                  "description": "The parcel is expected to be delivered during the day.",
+                  "eventDateTime": "2025-05-13T07:53:03+0200"
+                },
+                {
+                  "code": "OUTDEL.NORMAL",
+                  "city": "",
+                  "postalCode": "",
+                  "country": "DE",
+                  "description": "The parcel is expected to be delivered during the day.",
+                  "eventDateTime": "2025-05-13T06:25:03+0200"
+                },
+                {
+                  "code": "INBOUD.NORMAL",
+                  "city": "",
+                  "postalCode": "",
+                  "country": "DE",
+                  "description": "The parcel has reached the parcel center.",
+                  "eventDateTime": "2025-05-13T06:16:49+0200"
+                },
+                {
+                  "code": "INBOUD.NORMAL",
+                  "city": "",
+                  "postalCode": "",
+                  "country": "DE",
+                  "description": "The parcel has reached the parcel center.",
+                  "eventDateTime": "2025-05-12T11:07:37+0200"
+                },
+                {
+                  "code": "OUTBOD.NORMAL",
+                  "city": "",
+                  "postalCode": "",
+                  "country": "DE",
+                  "description": "The parcel has left the parcel center.",
+                  "eventDateTime": "2025-05-12T11:07:37+0200"
+                },
+                {
+                  "code": "INBOUD.NORMAL",
+                  "city": "",
+                  "postalCode": "",
+                  "country": "DE",
+                  "description": "The parcel has reached the parcel center.",
+                  "eventDateTime": "2025-05-12T11:05:15+0200"
+                },
+                {
+                  "code": "OUTBOD.NORMAL",
+                  "city": "",
+                  "postalCode": "",
+                  "country": "FI",
+                  "description": "The parcel has left the parcel center.",
+                  "eventDateTime": "2025-05-09T20:07:15+0200"
+                },
+                {
+                  "code": "INTIAL.NORMAL",
+                  "city": "",
+                  "postalCode": "",
+                  "country": "FI",
+                  "description": "The parcel was handed over to GLS.",
+                  "eventDateTime": "2025-05-09T20:07:14+0200"
+                },
+                {
+                  "code": "INTIAL.PREADVICE",
+                  "city": "",
+                  "postalCode": "",
+                  "country": "FI",
+                  "description": "The parcel data was entered into the GLS IT system; the parcel was not yet handed over to GLS.",
+                  "eventDateTime": "2025-05-08T17:39:20+0200"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    "When clicking ‘Test workflow’": [
+      {
+        "json": {}
+      }
+    ],
+    "Split Out1": [
+      {
+        "json": {
+          "createdAt": "2025-06-09T02:01:23Z",
+          "modifiedAt": "2025-06-09T02:02:11Z",
+          "shipmentType": "PARCEL",
+          "ediSender": "UNIFAUN",
+          "expeditionType": "NORMAL",
+          "consignmentNumber": "20250609040115079",
+          "trackingNumber": "JJFI61254910068561446",
+          "product": {
+            "code": "2103",
+            "name": {
+              "fi": "Postipaketti",
+              "en": "Postal Parcel",
+              "sv": "Postpaket",
+              "et": "Postal Parcel",
+              "lt": "Postal Parcel",
+              "lv": "Postal Parcel",
+              "ru": "Postal Parcel"
+            },
+            "additionalInfo": {
+              "fi": "Toimitusaika: Seuraavana työpäivänä klo 19 mennessä \nToimitustapa: Nouto toimipisteestä/automaatista"
+            }
+          },
+          "services": [
+            {
+              "code": "3139",
+              "name": {
+                "fi": "Sähköinen saapumisilmoitus",
+                "en": "Electronic notice of arrival",
+                "sv": "Elektronisk ankomstavisering",
+                "et": "Electronic notice of arrival",
+                "lt": "Electronic notice of arrival",
+                "lv": "Electronic notice of arrival",
+                "ru": "Electronic notice of arrival"
+              },
+              "additionalInfo": {}
+            },
+            {
+              "code": "3208",
+              "name": {
+                "fi": "Lähetyksen noutopistevalinta",
+                "en": "Pick-up point dynamic additional service",
+                "sv": "Serviceställen vald",
+                "et": "Pick-up point dynamic additional service",
+                "lt": "Pick-up point dynamic additional service",
+                "lv": "Pick-up point dynamic additional service",
+                "ru": "Pick-up point dynamic additional service"
+              },
+              "additionalInfo": {}
+            },
+            {
+              "code": "3355",
+              "name": {
+                "fi": "SmartDynamic ohjattu",
+                "en": "SmartDynamic",
+                "sv": "SmartDynamic",
+                "et": "SmartDynamic",
+                "lt": "SmartDynamic",
+                "lv": "SmartDynamic",
+                "ru": "SmartDynamic"
+              },
+              "additionalInfo": {}
+            },
+            {
+              "code": "3356",
+              "name": {
+                "fi": "Sähköiset yhteystiedot lähetyksellä",
+                "en": "Suitable for parcel lockers",
+                "sv": "Suitable for parcel lockers",
+                "et": "Suitable for parcel lockers",
+                "lt": "Suitable for parcel lockers",
+                "lv": "Suitable for parcel lockers",
+                "ru": "Suitable for parcel lockers"
+              },
+              "additionalInfo": {}
+            }
+          ],
+          "departure": {
+            "postcode": "00980",
+            "city": "HELSINKI",
+            "country": "FI"
+          },
+          "destination": {
+            "postcode": "02184",
+            "city": "ESPOO",
+            "country": "FI"
+          },
+          "parties": {
+            "consignee": {
+              "postcode": "02180",
+              "city": "ESPOO",
+              "country": "FI"
+            },
+            "consignor": {
+              "postcode": "00980",
+              "city": "HELSINKI",
+              "country": "FI"
+            },
+            "delivery": {
+              "postcode": "02184",
+              "city": "Espoo",
+              "country": "FI"
+            },
+            "payer": {},
+            "deliveryTerminal": {
+              "postcode": "02630",
+              "city": "ESPOO",
+              "country": "FI"
+            }
+          },
+          "packageQuantity": {
+            "value": 1,
+            "unit": "S1"
+          },
+          "events": [
+            {
+              "eventCode": "EDI",
+              "eventShortName": {
+                "fi": "Edi-ilmoitus",
+                "en": "EDI message"
+              },
+              "eventDescription": {
+                "fi": "Lähetys on matkalla Postille",
+                "en": "The shipment is on its way to Posti",
+                "sv": "Försändelsen är på väg till Posti",
+                "et": "Tellimus on loodud. Saadetis pole jõudnud SmartPosti ",
+                "lt": "Užsakymas sukurtas. Siunta SmartPosti nepasiekė",
+                "lv": "Pasūtījums ir izveidots. Sūtījums SmartPosti nav sasniedzis",
+                "ru": "Почтовое отправление отсутствует на почте."
+              },
+              "eventAdditionalInfo": {},
+              "reasonDescription": {
+                "fi": "Olemme saaneet lähettäjältä ainoastaan tiedon tulevasta lähetyksestä. Lähetys ei ole vielä saapunut Postin kuljetettavaksi, joten odota vielä. Ota yhteyttä lähettäjään, jos lähetyksen seurantanäkymä ei päivity.",
+                "en": "We have received information from the sender about the upcoming shipment. The shipment has not yet arrived for Posti's delivery, so please wait. Contact the sender if the shipment tracking status does not update.",
+                "sv": "Vi har fått information från avsändaren angående den kommande leveransen. Leveransen har ännu inte kommit fram för leverans av Posti, så vänligen vänta. Kontakta avsändaren om spårningsstatusen för leveransen inte uppdateras.",
+                "et": "Oleme saanud saatjalt saadetise kohta üksnes elektroonilise eelteate (EDI-sõnumi). See tähendab, et saadetis ei ole veel transpordiks Postisse saabunud. Oodake. Kui EDI-sõnumist on möödunud omajagu aega, siis võtke saatjaga ühendust ja küsige temalt lisateavet.",
+                "lt": "Iš siuntėjo gavome tik elektroninį išankstinį pranešimą (EDI) apie siuntą. Tai reiškia, kad siunta dar neatvyko į siuntų paskirstymo punktą. Taigi, prašome dar palaukti. Jei nuo EDI pranešimo praėjo daug laiko, susisiekite su siuntėju dėl papildomos informacijos.",
+                "lv": "No nosūtītāja ir saņemts tikai elektronisks paziņojums (EDI ziņa) par plānoto sūtījumu. Tas nozīmē, ka sūtījums vēl nav nodots mūsu rīcībā. Ja kopš EDI ziņas saņemšanas ir pagājis ilgs laiks, lūdzu, sazinieties ar nosūtītāju, lai precizētu informāciju",
+                "ru": "Мы получили от отправителя только электронное предварительное уведомление (EDI-сообщение) о посылке. Это означает, что посылка еще не прибыла в Posti для последующей доставки, поэтому, пожалуйста, подождите. Тем не менее, если с момента получения EDI-сообщения прошло много времени, просим связаться с отправителем для возможного получения дополнительной информации."
+              },
+              "timestamp": "2025-06-09T02:01:23Z",
+              "country": "FI",
+              "locationCode": "00980998"
+            }
+          ],
+          "status": {
+            "code": "WAITING",
+            "description": {
+              "fi": "Lähetys ei ole vielä saapunut Postille",
+              "en": "Posti has not received the item yet",
+              "sv": "Försändelsen har ännu inte anlänt till Posti",
+              "et": "Posti pole kaupa veel kätte saanud",
+              "lt": "„Posti“ dar negavo prekės",
+              "lv": "Uzņēmums Posti vēl nav saņēmis preci",
+              "ru": "Почтовое отправление еще не доставлено в Posti"
+            }
+          }
+        }
+      }
+    ],
+    "On form submission": [
+      {
+        "json": {
+          "Files": [
+            {
+              "filename": "Postiglue.xlsx",
+              "mimetype": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+              "size": 357498
+            }
+          ],
+          "Source": "Posti - Glue",
+          "submittedAt": "2025-06-17T21:16:00.283+03:00",
+          "formMode": "production"
+        }
+      }
+    ]
+  },
+  "connections": {
+    "When clicking ‘Test workflow’": {
+      "main": [
+        []
+      ]
+    },
+    "gettracking": {
+      "main": [
+        [
+          {
+            "node": "If7",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "On form submission": {
+      "main": [
+        [
+          {
+            "node": "Switch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract binaries": {
+      "main": [
+        [
+          {
+            "node": "Extract from File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Items1": {
+      "main": [
+        [
+          {
+            "node": "No Operation, do nothing1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "gettracking",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait1": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "posti external access token": {
+      "main": [
+        [
+          {
+            "node": "Extract binaries",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "posti public access token": {
+      "main": [
+        [
+          {
+            "node": "Extract binaries2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract from File": {
+      "main": [
+        [
+          {
+            "node": "Edit Fields1",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "If5",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch": {
+      "main": [
+        [
+          {
+            "node": "posti public access token1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "posti public access token",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Extract binaries1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Extract binaries4",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Extract binaries3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract binaries2": {
+      "main": [
+        [
+          {
+            "node": "Extract from File2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract from File2": {
+      "main": [
+        [
+          {
+            "node": "Edit Fields",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "turn into 10 tracking lists1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "turn into 10 tracking lists1": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Out": {
+      "main": [
+        [
+          {
+            "node": "Wait1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "No Operation, do nothing1": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit Fields": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge": {
+      "main": [
+        [
+          {
+            "node": "Google Sheets1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Sheets1": {
+      "main": [
+        []
+      ]
+    },
+    "Edit Fields1": {
+      "main": [
+        [
+          {
+            "node": "Code",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code": {
+      "main": [
+        [
+          {
+            "node": "Merge2",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "gettracking waybill": {
+      "main": [
+        [
+          {
+            "node": "If2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Items2": {
+      "main": [
+        [
+          {
+            "node": "Merge2",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait2": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "gettracking trackingref": {
+      "main": [
+        [
+          {
+            "node": "If3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If": {
+      "main": [
+        [
+          {
+            "node": "If1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "gettracking waybill",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Out3": {
+      "main": [
+        [
+          {
+            "node": "Edit Fields4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit Fields4": {
+      "main": [
+        [
+          {
+            "node": "Wait2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Out4": {
+      "main": [
+        [
+          {
+            "node": "Edit Fields5",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit Fields5": {
+      "main": [
+        [
+          {
+            "node": "Wait2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge2": {
+      "main": [
+        [
+          {
+            "node": "Google Sheets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP GET statuses": {
+      "main": [
+        [
+          {
+            "node": "Wait3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GLS get access token key": {
+      "main": [
+        [
+          {
+            "node": "turn into 10 tracking lists2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract binaries1": {
+      "main": [
+        [
+          {
+            "node": "Extract from File1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract from File1": {
+      "main": [
+        [
+          {
+            "node": "Edit Fields7",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "GLS get access token key",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Items3": {
+      "main": [
+        [
+          {
+            "node": "Split Out5",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "HTTP GET statuses",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait3": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge3": {
+      "main": [
+        [
+          {
+            "node": "Google Sheets2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit Fields6": {
+      "main": [
+        [
+          {
+            "node": "Merge3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Out5": {
+      "main": [
+        [
+          {
+            "node": "Edit Fields6",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "turn into 10 tracking lists2": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit Fields7": {
+      "main": [
+        [
+          {
+            "node": "Code1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code1": {
+      "main": [
+        [
+          {
+            "node": "Merge3",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "posti public access token1": {
+      "main": [
+        [
+          {
+            "node": "posti external access token",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If1": {
+      "main": [
+        [
+          {
+            "node": "gettracking1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "gettracking trackingref",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "gettracking1": {
+      "main": [
+        [
+          {
+            "node": "If4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Out1": {
+      "main": [
+        [
+          {
+            "node": "Edit Fields8",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit Fields8": {
+      "main": [
+        []
+      ]
+    },
+    "posti public access token2": {
+      "main": [
+        [
+          {
+            "node": "gettracking2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "posti external access token1": {
+      "main": [
+        []
+      ]
+    },
+    "If2": {
+      "main": [
+        [
+          {
+            "node": "Switch1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Loop Over Items2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch1": {
+      "main": [
+        [
+          {
+            "node": "Split Out3",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Split Out4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If3": {
+      "main": [
+        [
+          {
+            "node": "Switch1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Loop Over Items2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If4": {
+      "main": [
+        [
+          {
+            "node": "Switch1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Loop Over Items2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If5": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items2",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No Operation, do nothing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract binaries4": {
+      "main": [
+        [
+          {
+            "node": "Extract from File4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract from File4": {
+      "main": [
+        [
+          {
+            "node": "Switch2",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Edit Fields9",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "turn into 10 tracking lists": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Items": {
+      "main": [
+        [
+          {
+            "node": "Merge4",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Get tracking status events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Out status events": {
+      "main": [
+        [
+          {
+            "node": "Extract last event and add description",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get tracking status events": {
+      "main": [
+        [
+          {
+            "node": "If6",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch2": {
+      "main": [
+        [
+          {
+            "node": "get distinct tracking refs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "get distinct tracking refs": {
+      "main": [
+        [
+          {
+            "node": "turn into 10 tracking lists",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract last event and add description": {
+      "main": [
+        [
+          {
+            "node": "Wait",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge4": {
+      "main": [
+        [
+          {
+            "node": "Google Sheets3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit Fields9": {
+      "main": [
+        [
+          {
+            "node": "Code2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code2": {
+      "main": [
+        [
+          {
+            "node": "Merge4",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "If6": {
+      "main": [
+        [
+          {
+            "node": "Split Out status events",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If7": {
+      "main": [
+        [
+          {
+            "node": "Split Out",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Loop Over Items1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request": {
+      "main": [
+        [
+          {
+            "node": "Edit Fields3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract binaries3": {
+      "main": [
+        [
+          {
+            "node": "Extract from File3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract from File3": {
+      "main": [
+        [
+          {
+            "node": "Code4",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Edit Fields10",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Items4": {
+      "main": [
+        [
+          {
+            "node": "No Operation, do nothing2",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait4": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "No Operation, do nothing2": {
+      "main": [
+        [
+          {
+            "node": "Merge5",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit Fields10": {
+      "main": [
+        [
+          {
+            "node": "Code3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code3": {
+      "main": [
+        [
+          {
+            "node": "Merge5",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge5": {
+      "main": [
+        [
+          {
+            "node": "Google Sheets4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code4": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit Fields3": {
+      "main": [
+        [
+          {
+            "node": "Wait4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "1e156142-e53f-4952-a241-63b1b50a4478",
+  "meta": {
+    "instanceId": "b1cb732c6db267db59ec7526cd0732babb5e9f0ca45ee906a17885e1da6cd3e4"
+  },
+  "id": "E3E6czmJhb4zXsls",
+  "tags": []
+}

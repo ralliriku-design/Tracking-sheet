@@ -1,0 +1,149 @@
+
+/** 01_config_and_utils.gs — core config, utils, logging **/
+
+/* ==== Sheet names (you can change) ==== */
+if (typeof PBI_PROP_MD5KEY === 'undefined')    var PBI_PROP_MD5KEY    = 'PBI_FILE_MD5_SET_JSON';
+if (typeof PBI_STAGING_SHEET === 'undefined')  var PBI_STAGING_SHEET  = 'PBI_Outbound_Staging';
+if (typeof PBI_PROCESSED_DIR === 'undefined')  var PBI_PROCESSED_DIR  = 'Processed';
+if (typeof PBI_DUPLICATES_DIR === 'undefined') var PBI_DUPLICATES_DIR = 'Duplicates';
+if (typeof PBI_ERRORS_DIR === 'undefined')     var PBI_ERRORS_DIR     = 'Errors';
+
+/* ==== Defaults / limits ==== */
+const REFRESH_CUTOFF_MS = 6 * 3600 * 1000;   // re-check if last refresh older than 6h
+const BULK_MAX_API_CALLS_PER_RUN = 250;
+const BULK_TIME_LIMIT_MS = 5 * 60 * 1000 - 15000; // 5min minus safety
+const BULK_BACKOFF_MINUTES_BASE = 30;
+
+/* ==== Helpers: properties ==== */
+function TRK_props_(k) {
+  return PropertiesService.getScriptProperties().getProperty(k) || '';
+}
+function TRK_setProp_(k, v) {
+  if (v === null || v === undefined || v === '') {
+    PropertiesService.getScriptProperties().deleteProperty(k);
+  } else {
+    PropertiesService.getScriptProperties().setProperty(k, String(v));
+  }
+}
+
+/* ==== Helpers: text, dates ==== */
+function normalize_(s) {
+  return String(s||'').toLowerCase().trim().replace(/\s+/g,' ').replace(/[^\p{L}\p{N}]+/gu,' ');
+}
+function headerIndexMap_(hdr) {
+  const m = {};
+  (hdr||[]).forEach((h,i)=>{
+    const n = normalize_(h);
+    m[h] = i;
+    m[n] = i;
+  });
+  return m;
+}
+function colIndexOf_(map, names){
+  for (const n of (names||[])){
+    if (n in map) return map[n];
+    const low = normalize_(n);
+    if (low in map) return map[low];
+  }
+  return -1;
+}
+function fmtIso_(d){
+  try { return Utilities.formatDate(new Date(d), Session.getScriptTimeZone(), "yyyy-MM-dd'T'HH:mm:ss"); }
+  catch(e){ try { return new Date(d).toISOString(); } catch(err){ return String(d||''); } }
+}
+
+/* ==== Logging ==== */
+function logError_(context, error){
+  const ss = SpreadsheetApp.getActive();
+  const sh = ss.getSheetByName(ERROR_SHEET) || ss.insertSheet(ERROR_SHEET);
+  sh.appendRow([new Date(), context, String(error)]);
+  if (sh.getLastRow() > 2000) sh.deleteRows(1, sh.getLastRow()-2000);
+}
+
+/* ==== Rate limiting (guarded) ==== */
+function trkRateLimitWait_(carrier) {
+  const lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(30000);
+    const sp = PropertiesService.getScriptProperties();
+    const keyLast = 'RATE_LAST_' + String(carrier||'').toUpperCase();
+    const keyMinMs = 'RATE_MINMS_' + String(carrier||'').toUpperCase();
+    const last = Number(sp.getProperty(keyLast) || '0');
+    const minMs = Number(sp.getProperty(keyMinMs) || '0');
+    const now = Date.now();
+    const elapsed = now - last;
+    if (minMs && elapsed < minMs) Utilities.sleep(minMs - elapsed);
+    sp.setProperty(keyLast, String(Date.now()));
+  } catch(e){
+    logError_('trkRateLimitWait_', e);
+  } finally { try { lock.releaseLock(); } catch(e){} }
+}
+function autoTuneRateLimitOn429_(carrier, addMs, capMs){
+  try {
+    const sp = PropertiesService.getScriptProperties();
+    const key = 'RATE_MINMS_' + String(carrier||'').toUpperCase();
+    const current = Number(sp.getProperty(key) || '0');
+    const updated = Math.min(current + (addMs||100), capMs || (current + (addMs||100)));
+    sp.setProperty(key, String(updated));
+  } catch(e){ logError_('autoTuneRateLimitOn429_', e); }
+}
+function getCfgInt_(key, fallback){
+  const v = PropertiesService.getScriptProperties().getProperty(key);
+  return v ? Number(v) : (fallback||0);
+}
+
+/* ==== Carrier canonicalization (matches your list) ==== */
+function canonicalCarrier_(s){
+  const c = String(s||'').toLowerCase();
+  if (/(^|\s)posti/.test(c) || /posti oy/.test(c) || /posti api/.test(c)) return 'posti';
+  if (/gls/.test(c)) return 'gls';
+  if (/dhl parcel europe/.test(c) || /dhl finland/.test(c) || /\bdhl\b/.test(c)) return 'dhl';
+  if (/bring/.test(c)) return 'bring';
+  if (/matkahuolto/.test(c)) return 'matkahuolto';
+  if (/kaukokiito/.test(c)) return 'kaukokiito'; // manual path
+  return 'other';
+}
+
+/* ==== HTTP guard ==== */
+function TRK_safeFetch_(url, opt){
+  try { return UrlFetchApp.fetch(url, opt||{}); }
+  catch(e){
+    return {
+      getResponseCode: ()=>0,
+      getContentText: ()=>String(e),
+      getAllHeaders: ()=>({})
+    };
+  }
+}
+
+/* ==== Metrics ==== */
+function metricsBump_(mode, tried, ok, err, r429){
+  const ss = SpreadsheetApp.getActive();
+  const sh = ss.getSheetByName(METRICS_SHEET) || ss.insertSheet(METRICS_SHEET);
+  sh.appendRow([new Date(), mode||'', SpreadsheetApp.getActiveSheet().getName(), tried||0, ok||0, err||0, r429||0, (ok?(Math.round(ok*100/Math.max(1,tried))):0)]);
+}
+
+/* ==== Safety: ensure output columns exist ==== */
+function ensureOutputColumns_(sh){
+  const data = sh.getDataRange().getValues();
+  if (!data.length) return;
+  const hdr = data[0].slice();
+  const need = ['RefreshCarrier','RefreshStatus','RefreshTime','RefreshLocation','RefreshRaw','RefreshAt'];
+  let changed = false;
+  need.forEach(col=>{ if (hdr.indexOf(col) === -1){ hdr.push(col); changed = true; } });
+  if (changed){
+    sh.getRange(1,1,1,hdr.length).setValues([hdr]);
+  }
+}
+
+/* ==== Resolve tracking & carrier & time columns for a sheet ==== */
+function resolveColumns_(sh){
+  const data = sh.getDataRange().getValues();
+  if (!data.length) return null;
+  const hdr = data[0];
+  const map = headerIndexMap_(hdr);
+  const idxCarrier = colIndexOf_(map, ['Carrier', 'LogisticsProvider', 'Shipper']);
+  const idxTrack = colIndexOf_(map, ['TrackingNumber', 'Package Number', 'PackageNumber', 'Package Id', 'PackageId', 'Package id', 'Package number']);
+  const idxRefAt  = colIndexOf_(map, ['RefreshAt','Last refresh at','Refreshed at']);
+  return {hdr, map, idxCarrier, idxTrack, idxRefAt};
+}

@@ -1,0 +1,356 @@
+/** 02_menu_and_ui.gs — Menu & quick actions (clean drop-in)
+ *  - Rakentaa valikon turvallisesti (myös headless-ajossa ok)
+ *  - Näyttää mittarisivupalkin
+ *  - Asettaa oletus ScriptProperties (SeedDefaultsOverwrite)
+ *  - Yhteenveto UI: salasanat/avaimet maskataan
+ */
+
+/** ——— Pienet UI-apurit: eivät kaadu headless-ajossa ——— */
+function _uiAlert_(msg){
+  try { SpreadsheetApp.getUi().alert(String(msg)); }
+  catch(e){ Logger.log('[ALERT] ' + msg); }
+}
+function _uiShowSidebar_(htmlOutput){
+  try { SpreadsheetApp.getUi().showSidebar(htmlOutput); }
+  catch(e){ Logger.log('[SIDEBAR]\n' + htmlOutput.getContent()); }
+}
+
+/** ——— Add-on install hook (ei pakollinen tavallisessa skriptissä) ——— */
+function onInstall(e){
+  try { onOpen(e); }
+  catch (err) { Logger.log('onInstall: UI ei käytettävissä → ohitetaan valikko. ' + err); }
+}
+
+/** ——— Valikon rakennus ——— */
+function onOpen(){
+  const ui = SpreadsheetApp.getUi();
+
+  ui.createMenu('Shipment')
+    .addItem('Aseta valinnaiset oletukset', 'seedKnownAccountsAndKeys')
+    .addItem('Näytä edistyminen', 'showProgressSidebar')
+    .addSeparator()
+
+    // Työjonot
+    .addItem('Rakenna Vaatii_toimenpiteitä', 'buildPendingFromPackagesAndArchive')
+    .addItem('Päivitä Vaatii_toimenpiteitä status', 'refreshStatuses_Vaatii')
+    .addItem('Aloita: aktiivinen välilehti', 'bulkStartForActiveSheet')
+.addItem('Pysäytä bulk-ajo', 'bulkStop')
+
+    .addSeparator()
+
+    // Iso statusajo
+    .addSubMenu(
+      ui.createMenu('Iso statusajo (turvallinen)')
+        .addItem('Aloita: aktiivinen välilehti', 'bulkStartForActiveSheet')
+        .addItem('Aloita: Vaatii_toimenpiteitä', 'bulkStart_Vaatii')
+        .addItem('Pysäytä bulk-ajo', 'bulkStop')
+    )
+    .addSeparator()
+
+// Tuonnit (Gmail/Drive/PBI)
+.addSubMenu(
+  ui.createMenu('Tuonnit (Gmail/Drive)')
+    .addItem('Tuo Gmail → Packages (Package Report)', 'gmailImportLatestPackagesReport')
+    .addItem('Tuo Drive-kansiosta → Outbound → Packages_Archive', 'driveImportLatestOutboundToArchive')
+    .addItem('PBI: tuo kaikki (vanhimmasta)', 'pbiImportOutbounds_OldestFirst')
+    .addItem('PBI: valitse tiedosto ja tuo', 'pbiImport_SelectAndImport')  // ← tämä
+    .addItem('PBI: staging-headerit → fix', 'pbiImport_ReindexHeaders')
+    .addItem('PBI: arvaa Carrier seurantakoodista', 'pbiGuessCarriersForStaging')
+
+)
+
+    .addSeparator()
+
+    // Kaukokiito (manuaali)
+    .addSubMenu(
+      ui.createMenu('Kaukokiito (manuaali)')
+        .addItem('Avaa KK_Paste', 'kkOpenPasteSheet')
+        .addItem('Sovella KK_Paste → aktiiviseen tauluun', 'kkApplyToActive')
+    )
+    .addSeparator()
+
+    // Raportit
+    .addSubMenu(
+      ui.createMenu('Raportit')
+        .addItem('Toimitusajat – listaus', 'makeDeliveryTimeReport')
+        .addItem('Toimitusajat viikkotasolla maittain', 'makeCountryWeekLeadtimeReport')
+        .addItem('Tilausduplikaatit eri carrierilla', 'reportDuplicateOrdersDifferentCarrier')
+        
+    )
+    .addSeparator()
+
+    // Tarkistimet & QC
+    .addSubMenu(
+      ui.createMenu('Tarkistimet')
+        .addItem('Tarkista arkiston tuplat', 'checkArchiveDuplicates')
+        .addItem('QC: Tuplat (OrderID+tuote+vastaanottaja, eri viite)', 'qcCheck_DuplicateOrders')
+        .addSeparator()
+        .addItem('Virheloki → auki', 'openErrorLog')
+        .addItem('Tyhjennä virheloki', 'clearErrorLog')
+        .addSeparator()
+        .addItem('Korjaa tracking-sarakkeet tekstiksi', 'sheetAudit_RepairTrackingColumnsNow')
+        .addItem('Audit: analysoi kaikki', 'sheetAudit_AuditAll')
+        .addItem('Audit: korjaa kaikki', 'sheetAudit_FixAll')
+    )
+    .addSeparator()
+
+    // Sivuasettelu
+    .addSubMenu(
+      ui.createMenu('Sivuasettelu')
+        .addItem('Aktiivinen välilehti → siisti', 'sheetLayout_ApplyStandardToActive')
+        .addItem('Kaikki välilehdet → siisti', 'sheetLayout_StandardizeAll')
+    )
+    .addSeparator()
+
+    // Asetukset
+    .addSubMenu(
+      ui.createMenu('Asetukset')
+        .addItem('Lataa oletusasetukset (ylikirjoita)', 'SeedDefaultsOverwrite')
+        .addItem('Aseta Power BI -kansion ID', 'setPbiFolderId_Menu')
+        .addItem('Näytä Power BI -kansion tiedot', 'showPbiFolderInfo')
+    )
+    .addToUi();
+}
+
+/** ——— Mittarisivupalkki ——— */
+function showProgressSidebar(){
+  const html = HtmlService.createHtmlOutput(
+    '<div style="font:14px system-ui;padding:12px">'
+    + '<h3>Tilanne</h3><div id="m"></div>'
+    + '<script>google.script.run.withSuccessHandler(function(t){document.getElementById("m").innerHTML=t;}).metricsSnapshotHtml();</script>'
+    + '</div>'
+  ).setTitle('Shipment – Mittarit');
+  _uiShowSidebar_(html);
+}
+
+/** ——— Oletusten asetus ScriptPropertiesiin (ylikirjoittaa) ——— */
+function SeedDefaultsOverwrite(){
+  const P = PropertiesService.getScriptProperties();
+  const SET = (k,v) => { P.setProperty(k, String(v)); return true; };
+  const changes = [];
+  function put(k,v){
+    const before = P.getProperty(k);
+    SET(k,v);
+    const after = P.getProperty(k);
+    changes.push({k,before,after});
+  }
+
+  /** --------- POSTI (legacy + OAuth) --------- **/
+  put('POSTI_TOKEN_URL', 'https://oauth2.posti.com/oauth/token');
+  put('POSTI_TRACK_URL', 'https://api.posti.fi/tracking/7/shipments/trackingnumbers/{{code}}');
+  put('POSTI_BASIC', ''); // Base64(client_id:client_secret) jos käytät OAuthia
+  put('POSTI_TRK_URL', 'https://atlas.posti.fi/track-shipment-json?ShipmentId={{code}}');
+  // Legacy Basic fallback (projektissa annettu user/pass)
+  const postiUser = 'ma_09931637_1P';
+  const postiPass = 'ZatuCE8isPeStlSijl4u';
+  put('POSTI_TRK_BASIC', Utilities.base64Encode(postiUser + ':' + postiPass));
+
+  /** --------- GLS (FI API + globaali fallback) --------- **/
+  // FI endpoint jätetty tyhjäksi, jotta ei ammuta väärään rajapintaan vahingossa.
+  put('GLS_FI_TRACK_URL','');
+  put('GLS_FI_API_KEY','vAUg0en8vKC6wufKwGWxIw8hL23IfuzL4u14Ioce9PkFkAqQgnnYTvfFyjnONWzR');
+  put('GLS_FI_SENDER_ID','006112,007413,007380,007529,007488,007580,007951,007952');
+  put('GLS_FI_METHOD','POST');
+
+  // Globaali OAuth-fallback
+  put('GLS_TOKEN_URL', 'https://api.gls-group.net/oauth2/v2/token');
+  put('GLS_BASIC', ''); // Base64(client_id:client_secret)
+  put('GLS_TRACK_URL', 'https://api.gls-group.net/track-and-trace-v1/tracking/simple/references/{{code}}');
+
+  /** --------- DHL --------- **/
+  put('DHL_TRACK_URL','https://api-eu.dhl.com/track/shipments?trackingNumber={{code}}');
+  put('DHL_API_KEY','MC4grRiZ7dDsokW2ltPG1Qfj17d0enZA');
+
+  /** --------- BRING --------- **/
+  put('BRING_TRACK_URL','https://api.bring.com/tracking/api/v2/tracking.json?q={{code}}');
+  put('BRING_UID','riku.ralli@ip-agency.fi');
+  put('BRING_KEY','5db5bcb9-d8ca-471b-89f2-db625f965228');
+  put('BRING_CLIENT_URL','https://omaappisi.fi');
+
+  /** --------- MATKAHUOLTO --------- **/
+  put('MH_TRACK_URL','https://extservices.matkahuolto.fi/mpaketti/public/tracking?ids={{code}}');
+  put('MH_BASIC','OTQwMzI3Njp5MHRmWkd3ZGpp');
+
+  /** --------- Rate-limit & bulk --------- **/
+  put('RATE_MINMS_POSTI', '500');
+  put('RATE_MINMS_GLS', '800');
+  put('RATE_MINMS_DHL', '800');
+  put('RATE_MINMS_BRING', '800');
+  put('RATE_MINMS_MATKAHUOLTO', '500');
+  put('BULK_MAX_API_CALLS_PER_RUN', '300');
+  put('BULK_BACKOFF_MINUTES_BASE','30');
+
+  /** --------- Gmail & Drive --------- **/
+  put('GMAIL_QUERY_PACKAGES','label:"package report" OR subject:"Packages Report" newer_than:90d');
+  put('PBI_FOLDER_ID','1G6OyD9vNKq2DTT2YlNfGc48Mt3QPA_Un'); // vaihda tarvittaessa
+
+  /** --------- Taulujen nimet --------- **/
+  put('ACTION_SHEET','Vaatii_toimenpiteitä');
+  put('TARGET_SHEET','Packages');
+  put('ARCHIVE_SHEET','Packages_Archive');
+  put('KK_PASTE_SHEET','KK_Paste');
+
+  /** --------- Päivitys ja mittarit --------- **/
+  put('REFRESH_COOLDOWN_MS', String(6*3600*1000));
+  put('DISPATCH_METRICS','true');
+  put('SLA_OPEN_DAYS','5');
+  put('SLA_PD_DAYS','5');
+
+  // Yhteenveto
+  showDefaultsSummary_(changes);
+}
+
+/** ——— Oletusten yhteenveto: maskaa salaisuudet, näyttää sivupalkkina ——— */
+function showDefaultsSummary_(changes){
+  function esc(s){
+    return String(s||'').replace(/[&<>"']/g, m => ({
+      '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+    }[m]));
+  }
+  function isSecret(k){
+    return /_BASIC$|_KEY$|_PASS$|_TOKEN$|SECRET|PASSWORD|AUTH/i.test(String(k||''));
+  }
+  function mask(v){
+    if (!v) return '';
+    const s = String(v);
+    return s.slice(0,6) + '...' + s.slice(-4) + ' (len:'+s.length+')';
+  }
+
+  const rowsHtml = (changes || []).map(r => {
+    const before = isSecret(r.k) ? mask(r.before||'') : (r.before||'');
+    const after  = isSecret(r.k) ? mask(r.after||'')  : (r.after||'');
+    return `<tr>
+      <td style="border:1px solid #e5e7eb;padding:6px 8px"><code>${esc(r.k)}</code></td>
+      <td style="border:1px solid #e5e7eb;padding:6px 8px">${esc(before)}</td>
+      <td style="border:1px solid #e5e7eb;padding:6px 8px">${esc(after)}</td>
+    </tr>`;
+  }).join('');
+
+  const html = HtmlService.createHtmlOutput(
+    `<div style="font:14px system-ui;padding:12px">
+      <h3>Oletusasetukset asennettu (ylikirjoitettu)</h3>
+      <p>Alempana ennen → jälkeen (salaisuudet maskattu).</p>
+      <table style="width:100%;border-collapse:collapse">
+        <thead>
+          <tr style="background:#f6f8fa">
+            <th style="text-align:left;border:1px solid #e5e7eb;padding:6px 8px">KEY</th>
+            <th style="text-align:left;border:1px solid #e5e7eb;padding:6px 8px">Ennen</th>
+            <th style="text-align:left;border:1px solid #e5e7eb;padding:6px 8px">Jälkeen</th>
+          </tr>
+        </thead>
+        <tbody>${rowsHtml}</tbody>
+      </table>
+      <p style="color:#666;font-size:12px;margin-top:8px">
+        Vinkki: jos käytät OAuthia, täytä <code>POSTI_BASIC</code> (Base64(client_id:client_secret)).
+        Jos käytät GLS FI -avainta, aseta <code>GLS_FI_TRACK_URL</code> oikeaan endpointiin.
+      </p>
+    </div>`
+  ).setWidth(800).setHeight(520).setTitle('Asetukset – yhteenveto');
+
+  try {
+    SpreadsheetApp.getUi().showSidebar(html);
+  } catch (e) {
+    Logger.log('showDefaultsSummary_: UI ei käytettävissä; tulostetaan sisältö logiin.');
+    Logger.log(html.getContent());
+  }
+}
+/** 99_props_tools.gs — Script Properties -apuja
+ *  Lista, haku, vienti Sheetille, poisto regexillä, yksittäinen get/set.
+ */
+
+// ——— Ydin ———
+function _P(){ return PropertiesService.getScriptProperties(); }
+function _isSecretKey_(k){ return /(_BASIC|_KEY|_PASS|_TOKEN|SECRET|PASSWORD|AUTH)$/i.test(k); }
+function _mask_(v){ if(!v) return ''; const s=String(v); return s.slice(0,6)+'...'+s.slice(-4)+' (len:'+s.length+')'; }
+
+// 1) Listaa KAIKKI ominaisuudet uuteen välilehteen
+function props_ListAllToSheet(){
+  const ss = SpreadsheetApp.getActive();
+  const sh = ss.getSheetByName('Script_Properties') || ss.insertSheet('Script_Properties');
+  sh.clear();
+
+  const obj = _P().getProperties(); // palauttaa kaikki, ei 50-rajalla
+  const keys = Object.keys(obj).sort();
+  const rows = [['Key','Value','Masked','Length']];
+  keys.forEach(k=>{
+    const v = obj[k] ?? '';
+    rows.push([k, String(v), _isSecretKey_(k) ? _mask_(v) : String(v), String(v).length]);
+  });
+
+  if (rows.length === 1){ rows.push(['(empty)','','','']); }
+  sh.getRange(1,1,rows.length, rows[0].length).setValues(rows);
+  sh.setFrozenRows(1);
+  sh.autoResizeColumns(1, rows[0].length);
+  try{
+    sh.getRange(1,1,1,4).setFontWeight('bold').setBackground('#f6f8fa');
+    sh.getRange(2,2,sh.getLastRow()-1,1).setNumberFormat('@'); // Value tekstiksi
+  }catch(e){}
+  SpreadsheetApp.getUi().alert(`Script Properties listattu: ${keys.length} kpl (välilehti: Script_Properties).`);
+}
+
+// 2) Tulosta kaikki Logiin (nopea tarkistus)
+function props_ListAllToLog(){
+  const obj = _P().getProperties();
+  const keys = Object.keys(obj).sort();
+  Logger.log('Total properties: ' + keys.length);
+  keys.forEach(k=>{
+    const v = obj[k];
+    Logger.log(k + ' = ' + (_isSecretKey_(k) ? _mask_(v) : v));
+  });
+}
+
+// 3) Haku: näytä kaikki avaimet, jotka matcheja regexiin (case-insensitive)
+function props_Find(pattern){
+  const re = new RegExp(pattern, 'i');
+  const obj = _P().getProperties();
+  const hits = Object.keys(obj).filter(k=>re.test(k)).sort();
+  if (!hits.length){ SpreadsheetApp.getUi().alert(`Ei osumia: /${pattern}/i`); return; }
+  const lines = hits.map(k=> k + ' = ' + (_isSecretKey_(k) ? _mask_(obj[k]) : obj[k]));
+  SpreadsheetApp.getUi().alert(`Osumia ${hits.length} kpl:\n\n` + lines.join('\n'));
+}
+
+// 4) Poista ominaisuuksia regexillä (VARO!): esim. props_DeleteByRegex('^TMP_|^ERR_COUNT\\|')
+function props_DeleteByRegex(pattern){
+  const re = new RegExp(pattern, 'i');
+  const P = _P();
+  const all = P.getProperties();
+  const del = Object.keys(all).filter(k=>re.test(k));
+  if (!del.length){ SpreadsheetApp.getUi().alert(`Ei poistettavaa: /${pattern}/i`); return; }
+  del.forEach(k=>P.deleteProperty(k));
+  SpreadsheetApp.getUi().alert(`Poistettu ${del.length} ominaisuutta.\nRegex: /${pattern}/i`);
+}
+
+// 5) Tyhjennä KAIKKI Script Properties (VAARA!)
+function props_ClearAll_CONFIRM(){
+  const ui = SpreadsheetApp.getUi();
+  const resp = ui.alert('VAROITUS', 'Tyhjennetään KAIKKI Script Properties. Jatketaanko?', ui.ButtonSet.YES_NO);
+  if (resp !== ui.Button.YES) return;
+  _P().deleteAllProperties();
+  ui.alert('Kaikki Script Properties poistettu.');
+}
+
+// 6) Yksittäiset get/set/del
+function props_Get(key){
+  const val = _P().getProperty(key);
+  SpreadsheetApp.getUi().alert(val == null ? `(null)` : String(val));
+}
+function props_Set(key, value){
+  _P().setProperty(key, String(value));
+  SpreadsheetApp.getUi().alert(`OK: ${key} = ${value}`);
+}
+function props_Delete(key){
+  _P().deleteProperty(key);
+  SpreadsheetApp.getUi().alert(`Poistettu: ${key}`);
+}
+
+// 7) Pieni valikko tämän hallintaan (kutsu onOpenissa halutessasi)
+function props_AddMenu(){
+  try{
+    SpreadsheetApp.getUi()
+      .createMenu('Props')
+      .addItem('Listaa kaikki → Sheet','props_ListAllToSheet')
+      .addItem('Listaa kaikki → Log','props_ListAllToLog')
+      .addItem('Tyhjennä KAIKKI…','props_ClearAll_CONFIRM')
+      .addToUi();
+  }catch(e){ Logger.log(e); }
+}

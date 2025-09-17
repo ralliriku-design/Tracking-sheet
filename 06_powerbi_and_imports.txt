@@ -1,0 +1,349 @@
+
+/** 06_powerbi_and_imports.gs — Gmail & Drive imports, build pending **/
+
+/* Script properties used:
+   GMAIL_QUERY_PACKAGES   -> Gmail search query for Packages Report (default below)
+   PBI_FOLDER_ID          -> Google Drive folder ID for Outbound report uploads (your shared folder)
+*/
+
+function seedKnownAccountsAndKeys(){
+  const sp = PropertiesService.getScriptProperties();
+  const setIfEmpty = (k,v)=>{ if (!sp.getProperty(k)) sp.setProperty(k,v); };
+  // Carriers
+  setIfEmpty('GLS_FI_API_KEY','<GLS_FI_API_KEY>');
+  setIfEmpty('GLS_FI_TRACK_URL','https://<gls-fi-host>/customerapi/v2/get_tracking_events');
+  setIfEmpty('GLS_FI_SENDER_ID','<GLS_SENDER_ID>');
+  setIfEmpty('GLS_FI_METHOD','POST');
+  setIfEmpty('GLS_TOKEN_URL','https://api.gls-group.net/oauth2/v1/token');
+  setIfEmpty('GLS_BASIC','<base64_clientId:secret>');
+  setIfEmpty('GLS_TRACK_URL','https://api.gls-group.net/track-and-trace-v1/tracking/simple/references/{{code}}');
+  setIfEmpty('POSTI_TOKEN_URL','https://oauth2.posti.com/oauth/token');
+  setIfEmpty('POSTI_BASIC','<base64_clientId:secret>');
+  setIfEmpty('POSTI_TRACK_URL','https://api.posti.fi/tracking/7/shipments/trackingnumbers/{{code}}');
+  setIfEmpty('POSTI_TRK_URL','https://atlas.posti.fi/track-shipment-json?ShipmentId={{code}}');
+  setIfEmpty('POSTI_TRK_BASIC','<base64_user:pass>');
+  setIfEmpty('POSTI_TRK_USER','<ma_contract_user>');
+  setIfEmpty('POSTI_TRK_PASS','<ma_contract_pass>');
+  setIfEmpty('MH_TRACK_URL','https://extservices.matkahuolto.fi/mpaketti/public/tracking?ids={{code}}');
+  setIfEmpty('MH_BASIC','<base64_user:pass>');
+  setIfEmpty('DHL_TRACK_URL','https://api-eu.dhl.com/track/shipments?trackingNumber={{code}}');
+  setIfEmpty('DHL_API_KEY','<DHL_API_KEY>');
+  setIfEmpty('BRING_TRACK_URL','https://api.bring.com/tracking/api/v2/tracking.json?q={{code}}');
+  setIfEmpty('BRING_UID','<BRING_API_UID>');
+  setIfEmpty('BRING_KEY','<BRING_API_KEY>');
+  setIfEmpty('BRING_CLIENT_URL','https://<yourapp>.domain.com');
+
+  // Gmail / Drive
+  setIfEmpty('GMAIL_QUERY_PACKAGES','subject:"package report" OR subject:"Packages Report" newer_than:60d');
+  setIfEmpty('PBI_FOLDER_ID','1G6OyD9vNKq2DTT2YlNfGc48Mt3QPA_Un'); // your shared folder
+  setIfEmpty('BULK_BACKOFF_MINUTES_BASE','30');
+
+  SpreadsheetApp.getUi().alert('Oletusavaimet & hakuehdot asetettu. Muokkaa tarvittaessa "Project Properties → Script properties".');
+}
+
+/* Gmail: import latest Packages Report (CSV/XLSX) into TARGET_SHEET */
+function gmailImportLatestPackagesReport(){
+  const query = TRK_props_('GMAIL_QUERY_PACKAGES') || 'subject:"package report" OR subject:"Packages Report" newer_than:60d';
+  const threads = GmailApp.search(query, 0, 20);
+  if (!threads.length){ SpreadsheetApp.getUi().alert('Gmail: ei viestejä hakuehdolla:\n'+query); return; }
+  // search newest attachments from newest message first
+  for (let ti=0; ti<threads.length; ti++){
+    const msgs = threads[ti].getMessages();
+    for (let mi = msgs.length-1; mi>=0; mi--){
+      const atts = msgs[mi].getAttachments({includeInlineImages:false});
+      for (const att of atts){
+        if (!/\.(xlsx|csv)$/i.test(att.getName())) continue;
+        const values = readAttachmentToValues_(att, att.getName());
+        if (!values || values.length < 2) continue;
+        writeMatrixToSheet_(TARGET_SHEET, values);
+        SpreadsheetApp.getUi().alert('Gmail → '+TARGET_SHEET+' tuotu: '+att.getName());
+        buildPendingFromPackagesAndArchive(); // keep pending in sync
+        return;
+      }
+    }
+  }
+  SpreadsheetApp.getUi().alert('Gmail: sopivia liitteitä ei löytynyt.');
+}
+
+/* Drive: import latest Outbound (PowerBI) from a folder → append to ARCHIVE_SHEET. Delete the file after import. */
+function driveImportLatestOutboundToArchive(){
+  const folderId = TRK_props_('PBI_FOLDER_ID');
+  if (!folderId){ SpreadsheetApp.getUi().alert('Script property PBI_FOLDER_ID puuttuu.'); return; }
+  const folder = DriveApp.getFolderById(folderId);
+  const files = folder.getFiles();
+  let latest = null;
+  while (files.hasNext()){
+    const f = files.next();
+    if (/\.(xlsx|csv)$/i.test(f.getName())){
+      if (!latest || f.getLastUpdated() > latest.getLastUpdated()) latest = f;
+    }
+  }
+  if (!latest){ SpreadsheetApp.getUi().alert('Kansiosta ei löytynyt Outbound -tiedostoa.'); return; }
+  const blob = latest.getBlob(); const name = latest.getName();
+  const values = readAttachmentToValues_(blob, name);
+  if (!values || values.length<2){ SpreadsheetApp.getUi().alert('Tiedosto ei sisältänyt dataa: '+name); return; }
+  appendMatrixToSheet_(ARCHIVE_SHEET, values);
+  // remove processed file
+  latest.setTrashed(true);
+  SpreadsheetApp.getUi().alert('Drive → '+ARCHIVE_SHEET+' lisätty ja poistettu lähdetiedosto: '+name);
+}
+
+/* Attachment reader (CSV or XLSX via Drive Advanced Service) */
+function readAttachmentToValues_(blob, filename){
+  if (!blob) return null;
+  filename = filename || blob.getName();
+  try{
+    if (/\.xlsx$/i.test(filename) && typeof Drive !== 'undefined' && Drive.Files && typeof Drive.Files.create === 'function'){
+      const file = Drive.Files.create({ title:'TmpImport', mimeType: MimeType.GOOGLE_SHEETS }, blob);
+      const tmpId = file.id;
+      const ss = SpreadsheetApp.openById(tmpId);
+      const values = ss.getSheets()[0].getDataRange().getValues();
+      DriveApp.getFileById(tmpId).setTrashed(true);
+      return values;
+    }
+    const csv = Utilities.parseCsv(blob.getDataAsString('UTF-8'));
+    return csv;
+  } catch(e){ logError_('readAttachmentToValues_', e); return null; }
+}
+
+function writeMatrixToSheet_(sheetName, matrix){
+  const ss = SpreadsheetApp.getActive();
+  let sh = ss.getSheetByName(sheetName);
+  if (!sh) sh = ss.insertSheet(sheetName);
+  sh.clear();
+  sh.getRange(1,1,matrix.length, matrix[0].length).setValues(matrix);
+}
+function appendMatrixToSheet_(sheetName, matrix){
+  const ss = SpreadsheetApp.getActive();
+  let sh = ss.getSheetByName(sheetName);
+  if (!sh) sh = ss.insertSheet(sheetName);
+  if (sh.getLastRow()===0){
+    sh.getRange(1,1,matrix.length, matrix[0].length).setValues(matrix);
+  } else {
+    for (let r=1;r<matrix.length;r++){ sh.appendRow(matrix[r]); }
+  }
+}
+
+/* Build pending: items in TARGET not in ARCHIVE by key (tracking / package number) */
+function buildPendingFromPackagesAndArchive(){
+  const ss = SpreadsheetApp.getActive();
+  const shPack = ss.getSheetByName(TARGET_SHEET);
+  const shArch = ss.getSheetByName(ARCHIVE_SHEET);
+  if (!shPack || !shArch){ SpreadsheetApp.getUi().alert('Puuttuu '+TARGET_SHEET+' tai '+ARCHIVE_SHEET); return; }
+  const a = shPack.getDataRange().getValues();
+  const b = shArch.getDataRange().getValues();
+  if (a.length<2){ SpreadsheetApp.getUi().alert(TARGET_SHEET+' on tyhjä.'); return; }
+  const mapA = headerIndexMap_(a[0]); const mapB = headerIndexMap_(b.length?b[0]:[]);
+  const idxA = colIndexOf_(mapA, ['TrackingNumber','Package Number','PackageNumber','Package Id','PackageId','Package id','Package number']);
+  const idxB = colIndexOf_(mapB, ['TrackingNumber','Package Number','PackageNumber','Package Id','PackageId','Package id','Package number']);
+  const archSet = {};
+  for (let r=1;r<b.length;r++){ const k = String(b[r][idxB]||'').trim(); if (k) archSet[k]=true; }
+  const out = [a[0]];
+  for (let r=1;r<a.length;r++){ const k = String(a[r][idxA]||'').trim(); if (k && !archSet[k]) out.push(a[r]); }
+  let sh = ss.getSheetByName(ACTION_SHEET); if (!sh) sh = ss.insertSheet(ACTION_SHEET);
+  sh.clear();
+  sh.getRange(1,1,out.length, out[0].length).setValues(out);
+}
+
+/** ---------------- PBI: valitse yksittäinen tiedosto ja tuo ---------------- **/
+
+function pbiImport_SelectAndImport(){
+  const folder = _pbi_getFolder_();
+  if (!folder){
+    try { SpreadsheetApp.getUi().alert('PBI_FOLDER_ID puuttuu. Aseta se ensin.'); }
+    catch(e){ Logger.log('PBI_FOLDER_ID puuttuu.'); }
+    return;
+  }
+
+  const files = _pbi_listOutboundFilesNewestFirst_(folder); // uusimmat ensin
+  if (!files.length){
+    try { SpreadsheetApp.getUi().alert('PBI-kansiossa ei ole “Outbound order …” -tiedostoja.'); }
+    catch(e){ Logger.log('Ei Outbound-tiedostoja PBI-kansiossa.'); }
+    return;
+  }
+
+  // Rakenna HTML-dialogi
+  var options = files.map(function(f){
+    const created = Utilities.formatDate(f.getDateCreated(), Session.getScriptTimeZone()||'Europe/Helsinki', 'yyyy-MM-dd HH:mm');
+    const sizeStr = _fmtBytes_(f.getSize());
+    const label = `${created} — ${f.getName()} — ${sizeStr}`;
+    return `<option value="${f.getId()}">${label}</option>`;
+  }).join('');
+
+  const html = HtmlService.createHtmlOutput(
+    `<div style="font:14px system-ui;padding:12px">
+       <h3 style="margin:0 0 8px 0;">PBI-tuonti: valitse tiedosto</h3>
+       <label for="f">Outbound-tiedostot (uusin ensin):</label>
+       <select id="f" style="width:100%;margin:8px 0 12px 0;">${options}</select>
+       <div id="msg" style="margin:6px 0 10px 0;color:#666;"></div>
+       <div style="display:flex;gap:8px">
+         <button onclick="imp()" style="padding:6px 12px">Tuo valittu</button>
+         <button onclick="google.script.host.close()" style="padding:6px 12px">Peruuta</button>
+       </div>
+       <script>
+         function imp(){
+           var id = document.getElementById('f').value;
+           if(!id){ alert('Valitse tiedosto.'); return; }
+           document.getElementById('msg').textContent = 'Tuodaan…';
+           google.script.run.withSuccessHandler(function(res){
+             var txt = '';
+             if(!res){ txt = 'Valmis.'; }
+             else if(res.status==='duplicate'){
+               txt = 'Dublikaatti: siirretty kansioon "${PBI_DUPLICATES_DIR}".';
+             }else if(res.status==='imported'){
+               txt = 'OK: ' + res.rows + ' riviä tuotu. Siirretty kansioon "${PBI_PROCESSED_DIR}".';
+             }else if(res.status==='error'){
+               txt = 'Virhe: siirretty kansioon "${PBI_ERRORS_DIR}".';
+             }else{
+               txt = 'Valmis.';
+             }
+             document.getElementById('msg').textContent = txt;
+           }).pbiImport_ByFileId(id);
+         }
+       </script>
+     </div>`
+  ).setWidth(520).setHeight(260).setTitle('PBI-tuonti');
+
+  try { SpreadsheetApp.getUi().showModalDialog(html, 'PBI-tuonti'); }
+  catch(e){ Logger.log('UI ei käytettävissä; dialogi ohitettu.'); }
+}
+
+/** Tuonti valitulle tiedostolle */
+function pbiImport_ByFileId(fileId){
+  const folder = _pbi_getFolder_();
+  if (!folder) return {status:'error', reason:'missing_folder'};
+
+  const processed = _pbi_getOrMakeSubfolder_(folder, PBI_PROCESSED_DIR);
+  const dups      = _pbi_getOrMakeSubfolder_(folder, PBI_DUPLICATES_DIR);
+  const errors    = _pbi_getOrMakeSubfolder_(folder, PBI_ERRORS_DIR);
+
+  let file;
+  try { file = DriveApp.getFileById(fileId); }
+  catch(e){
+    Logger.log('pbiImport_ByFileId: file not found: ' + fileId);
+    return {status:'error', reason:'file_not_found'};
+  }
+
+  // Laske md5 → dublikaattitarkistus
+  const md5set = _pbi_loadMd5Set_();
+  let md5 = '';
+  try { md5 = _pbi_md5hex_(file.getBlob().getBytes()); } catch(e){ md5=''; }
+
+  if (md5 && md5set.has(md5)){
+    try { _pbi_safeMove_(file, dups); } catch(e){}
+    return {status:'duplicate'};
+  }
+
+  // Lue & kirjoita stagingiin
+  try{
+    const rows = _pbi_readFileToRows_(file); // header + data
+    let imported = 0;
+    if (rows && rows.length){
+      imported = _pbi_appendToStaging_(rows, file.getName(), file.getId());
+    }
+    // Siirrä käsiteltyihin + tallenna md5
+    try { _pbi_safeMove_(file, processed); } catch(e){}
+    if (md5){ md5set.add(md5); _pbi_saveMd5Set_(md5set); }
+    return {status:'imported', rows: imported};
+  } catch (err){
+    // Tiedosto virheellinen → Errors
+    try { _pbi_safeMove_(file, errors); } catch(e){}
+    return {status:'error', reason:'parse_or_append_failed'};
+  }
+}
+
+/** Listaa Outbound-tiedostot uusimmasta vanhimpaan (CSV + Google Sheets) */
+function _pbi_listOutboundFilesNewestFirst_(folder){
+  const files = [];
+  const it = folder.getFiles();
+  while (it.hasNext()){
+    const f = it.next();
+    const n = f.getName() || '';
+    if (!/^Outbound order/i.test(n)) continue;
+    const mime = f.getMimeType() || '';
+    if (mime.indexOf('text/csv') !== -1 ||
+        mime.indexOf('application/vnd.google-apps.spreadsheet') !== -1 ||
+        /\.csv$/i.test(n)) {
+      files.push(f);
+    }
+  }
+  files.sort(function(a,b){ return b.getDateCreated().getTime() - a.getDateCreated().getTime(); });
+  return files;
+}
+
+/** Kaunis koko (B → KB/MB) */
+function _fmtBytes_(bytes){
+  if (!bytes || bytes<1024) return (bytes||0) + ' B';
+  const kb = bytes/1024;
+  if (kb < 1024) return Math.round(kb) + ' KB';
+  const mb = kb/1024;
+  return (Math.round(mb*10)/10) + ' MB';
+}
+function archiveFix_ColumnT_ToText(){
+  const ss = SpreadsheetApp.getActive();
+  const sh = ss.getSheetByName('Packages_Archive');
+  if (!sh){ try{SpreadsheetApp.getUi().alert('Packages_Archive puuttuu.');}catch(e){} return; }
+
+  const col = 20; // T
+  const lastRow = sh.getLastRow();
+  if (lastRow < 2){ try{SpreadsheetApp.getUi().alert('Ei rivejä korjattavaksi.');}catch(e){} return; }
+
+  const rng   = sh.getRange(2, col, lastRow-1, 1);
+  const vals  = rng.getValues();
+  const disps = rng.getDisplayValues();
+
+  let changed = 0;
+  const out = vals.map((row, i) => {
+    const v = row[0];
+    const d = disps[i][0];
+    if (v === '' || v == null) return [''];
+    // Ota se, mitä käyttäjä "näkee", jos arvo on numero
+    let s = String(d || v);
+
+    // 1) Poista NBSP ja trim
+    s = s.replace(/\u00A0/g,' ').trim();
+
+    // 2) Poista välit, pisteet, viivat
+    s = s.replace(/[\s.\-]/g,'');
+
+    // 3) Jos muodossa "123,00" tai "123.00" → tiputa desimaaliosa
+    s = s.replace(/^(\d+)[,\.]\d+$/, '$1');
+
+    // 4) Pidä vain A–Z ja numerot
+    s = s.toUpperCase().replace(/[^A-Z0-9]/g,'');
+
+    if (s !== String(v)) changed++;
+    return [s];
+  });
+
+  rng.setValues(out);
+  // Pakota teksti-muoto
+  try{ rng.setNumberFormat('@'); }catch(e){}
+  try{ SpreadsheetApp.getUi().alert(`T-sarake korjattu. Muutettuja soluja: ${changed}`);}catch(e){}
+}function archive_ForceTextForTrackingLikeColumns(){
+  const ss = SpreadsheetApp.getActive();
+  const sh = ss.getSheetByName('Packages_Archive');
+  if (!sh){ return; }
+
+  const lastCol = sh.getLastColumn();
+  if (!lastCol) return;
+
+  const hdr = sh.getRange(1,1,1,lastCol).getValues()[0].map(v=>String(v||'').trim());
+  const matchers = [/tracking/i, /seuranta/i, /\bcode\b/i, /parcel/i, /package\s*number/i, /consignment/i, /viite/i];
+
+  const cols = [];
+  hdr.forEach((h, i) => {
+    if (matchers.some(re => re.test(h))) cols.push(i+1);
+  });
+
+  if (!cols.length) return;
+
+  const lastRow = sh.getLastRow();
+  if (lastRow < 2) return;
+
+  cols.forEach(c => {
+    const colRange = sh.getRange(2, c, lastRow-1, 1);
+    try{ colRange.setNumberFormat('@'); }catch(e){}
+  });
+}
+

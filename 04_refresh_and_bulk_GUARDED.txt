@@ -1,0 +1,133 @@
+
+/** 04_refresh_and_bulk_GUARDED.gs — refresh logic + bulk runner **/
+
+function firstCode_(cell){ return String(cell||'').split(/[\n,;]/)[0].trim(); }
+
+function refreshStatuses_Vaatii(){ refreshStatuses_Sheet(ACTION_SHEET, true); }
+
+function refreshStatuses_Sheet(sheetName, removeDelivered){
+  const ss = SpreadsheetApp.getActive();
+  const sh = ss.getSheetByName(sheetName);
+  if (!sh) return;
+  ensureOutputColumns_(sh);
+  const data = sh.getDataRange().getValues();
+  if (data.length < 2) return;
+  const {hdr, map, idxCarrier, idxTrack, idxRefAt} = resolveColumns_(sh);
+  if (idxCarrier === -1 || idxTrack === -1){ SpreadsheetApp.getUi().alert('Carrier tai Tracking -saraketta ei löytynyt.'); return; }
+
+  const now = Date.now();
+  const tried=0, ok=0, err=0, r429=0; // counters via closure
+  const out = [];
+  for (let r=1; r<data.length; r++){
+    const row = data[r];
+    if (!row.join('')){ out.push(['','','','','', fmtIso_(new Date())]); continue; }
+    const carrier = row[idxCarrier];
+    const code = firstCode_(row[idxTrack]);
+    const lastAt = (idxRefAt>-1 ? row[idxRefAt] : '');
+    const lastTs = lastAt ? new Date(lastAt).getTime() : 0;
+    const expired = !lastTs || (now - lastTs > REFRESH_CUTOFF_MS);
+    if (!carrier || !code || !expired){
+      out.push([row[hdr.indexOf('RefreshCarrier')]||carrier, row[hdr.indexOf('RefreshStatus')]||'', row[hdr.indexOf('RefreshTime')]||'', row[hdr.indexOf('RefreshLocation')]||'', row[hdr.indexOf('RefreshRaw')]||'', fmtIso_(new Date())]);
+      continue;
+    }
+    const res = TRK_trackByCarrier_(carrier, code);
+    out.push([res.carrier||carrier, res.status||'', res.time||'', res.location||'', res.raw||'', fmtIso_(new Date())]);
+    if (removeDelivered && /delivered|toimitettu|luovutettu/i.test(String(res.status||''))){
+      try { archiveRow_(row, sheetName); } catch(e){ logError_('archiveRow_', e); }
+    }
+  }
+  const firstCol = hdr.indexOf('RefreshCarrier') + 1;
+  sh.getRange(2, firstCol, out.length, 6).setValues(out);
+}
+
+function archiveRow_(row, sourceSheet){
+  const ss = SpreadsheetApp.getActive();
+  const shArch = ss.getSheetByName(ARCHIVE_SHEET) || ss.insertSheet(ARCHIVE_SHEET);
+  shArch.appendRow(row);
+  const shSrc = ss.getSheetByName(sourceSheet);
+  if (!shSrc) return;
+  const data = shSrc.getDataRange().getValues();
+  for (let i=1;i<data.length;i++){
+    if (String(data[i]) === String(row)){
+      shSrc.deleteRow(i+1);
+      break;
+    }
+  }
+}
+
+/* ==== Bulk runner (safe) ==== */
+function bulkStartForActiveSheet(){
+  const sh = SpreadsheetApp.getActiveSheet();
+  if (!sh) return;
+  bulkStartForSheet_(sh.getName());
+}
+function bulkStart_Vaatii(){ bulkStartForSheet_(ACTION_SHEET); }
+
+function bulkStartForSheet_(sheetName){
+  const ss = SpreadsheetApp.getActive();
+  const sh = ss.getSheetByName(sheetName);
+  if (!sh) return;
+  const job = { sheet: sheetName, row: 2, calls: 0, started: Date.now(), total: sh.getLastRow()-1 };
+  PropertiesService.getScriptProperties().setProperty('BULKJOB|'+sheetName, JSON.stringify(job));
+  ScriptApp.getProjectTriggers().forEach(tr=>{ if (tr.getHandlerFunction()==='bulkTick') ScriptApp.deleteTrigger(tr); });
+  ScriptApp.newTrigger('bulkTick').timeBased().everyMinutes(1).create();
+  SpreadsheetApp.getUi().alert('Bulk-ajo aloitettu: '+sheetName);
+}
+function bulkStop(){
+  ScriptApp.getProjectTriggers().forEach(tr=>{ if (tr.getHandlerFunction()==='bulkTick') ScriptApp.deleteTrigger(tr); });
+  PropertiesService.getScriptProperties().deleteProperty('BULKJOB|'+ACTION_SHEET);
+  SpreadsheetApp.getUi().alert('Bulk-ajo pysäytetty.');
+}
+
+function bulkTick(){
+  const sp = PropertiesService.getScriptProperties();
+  const props = sp.getProperties();
+  const jobKeys = Object.keys(props).filter(k=>k.indexOf('BULKJOB|')===0);
+  if (!jobKeys.length){
+    ScriptApp.getProjectTriggers().forEach(tr=>{ if (tr.getHandlerFunction()==='bulkTick') ScriptApp.deleteTrigger(tr); });
+    return;
+  }
+  const ss = SpreadsheetApp.getActive();
+  jobKeys.forEach(jobKey=>{
+    try{
+      const job = JSON.parse(sp.getProperty(jobKey));
+      const sh = ss.getSheetByName(job.sheet);
+      if (!sh){ sp.deleteProperty(jobKey); return; }
+      ensureOutputColumns_(sh);
+      const data = sh.getDataRange().getValues();
+      const {hdr, map, idxCarrier, idxTrack, idxRefAt} = resolveColumns_(sh);
+      if (idxCarrier===-1 || idxTrack===-1){ sp.deleteProperty(jobKey); return; }
+      const out = [];
+      const start = Date.now();
+      while (job.row < data.length && job.calls < BULK_MAX_API_CALLS_PER_RUN && (Date.now()-start) < BULK_TIME_LIMIT_MS){
+        const r = job.row;
+        const row = data[r];
+        job.row++;
+        if (!row.join('')) continue;
+        const carrier = row[idxCarrier];
+        const code = firstCode_(row[idxTrack]);
+        const lastAt = (idxRefAt>-1?row[idxRefAt]:''); const lastTs = lastAt?new Date(lastAt).getTime():0;
+        const expired = !lastTs || (Date.now()-lastTs>REFRESH_CUTOFF_MS);
+        if (!carrier || !code || !expired) continue;
+
+        trkRateLimitWait_(carrier);
+        const res = TRK_trackByCarrier_(carrier, code);
+        const rowData = [res.carrier||carrier, res.status||'', res.time||'', res.location||'', res.raw||'', fmtIso_(new Date())];
+        const firstCol = hdr.indexOf('RefreshCarrier') + 1;
+        sh.getRange(r+1, firstCol, 1, rowData.length).setValues([rowData]);
+
+        job.calls++;
+        if (res.status === 'RATE_LIMIT_429'){
+          const backoff = getCfgInt_('BULK_BACKOFF_MINUTES_BASE', BULK_BACKOFF_MINUTES_BASE);
+          sp.setProperty('PAUSE_UNTIL_'+String(carrier).toUpperCase(), String(Date.now()+backoff*60000));
+          break;
+        }
+      }
+      if (job.row >= data.length){ sp.deleteProperty(jobKey); }
+      else { sp.setProperty(jobKey, JSON.stringify(job)); }
+    } catch(e){
+      logError_('bulkTick '+jobKey, e);
+      sp.deleteProperty(jobKey);
+    }
+  });
+}

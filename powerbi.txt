@@ -1,0 +1,257 @@
+/** 10_pbi_drive_import.gs — Power BI Outbound -tiedostojen tuonti Drive-kansiosta
+ *  - pbiImportOutbounds_OldestFirst(): käy läpi PBI_FOLDER_ID -kansion tiedostot vanhimmasta uusimpaan
+ *    • CSV / Google Sheets -tuki (yksi tiedosto nyt: "Outbound order - 2025-09-15T135227.827")
+ *    • Dublikaatti (sisällöltään identtinen) → siirretään "Duplicates"-kansioon
+ *    • Muuten: tuodaan stagingiin (välilehti "PBI_Outbound_Staging") ja siirretään "Processed"-kansioon
+ *  - pbiImport_ReindexHeaders(): varmistaa stagingin headerien yhdenmukaisuuden (tarvittaessa)
+ *
+ * Huom: Ei vaadi Advanced Drive -palvelua; .xlsx-konversio ei ole mukana tässä versiossa.
+ *       Suositus: vie Power BI:stä CSV tai Google Sheet -muotoon.
+ */
+
+// --- Powerbi.gs: globaaleille nimille vartioidut julistukset (safe drop-in) ---
+if (typeof PBI_PROP_MD5KEY === 'undefined')    var PBI_PROP_MD5KEY    = 'PBI_FILE_MD5_SET_JSON';
+if (typeof PBI_STAGING_SHEET === 'undefined')  var PBI_STAGING_SHEET  = 'PBI_Outbound_Staging';
+if (typeof PBI_PROCESSED_DIR === 'undefined')  var PBI_PROCESSED_DIR  = 'Processed';
+if (typeof PBI_DUPLICATES_DIR === 'undefined') var PBI_DUPLICATES_DIR = 'Duplicates';
+if (typeof PBI_ERRORS_DIR === 'undefined')     var PBI_ERRORS_DIR     = 'Errors';
+
+
+/** ——— Julkiset ——— */
+
+/** Aja: käy läpi kaikki “Outbound order …” -tiedostot PBI-kansiosta, vanhimmasta uusimpaan. */
+/** Nimikriteeri: "outbound order" sallii välit, viivat, pisteet, isot/pienet kirjaimet */
+function _isOutboundName_(name){
+  const s = String(name || '')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g,'') // poista aksentit varmuuden vuoksi
+    .trim().toLowerCase();
+  return /outbound[\s._-]*order/.test(s); // hyväksyy: Outbound order / Outbound_order / Outbound-order / Outbound.order
+}
+
+/** Kelvollinen tiedostotyyppi (CSV / Google Sheets / Excel) */
+function _isEligibleMime_(name, mime){
+  const n = String(name||'');
+  const m = String(mime||'').toLowerCase();
+  return (
+    m.indexOf('text/csv') !== -1 ||
+    m.indexOf('application/vnd.google-apps.spreadsheet') !== -1 ||
+    m.indexOf('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet') !== -1 ||
+    m.indexOf('application/vnd.ms-excel') !== -1 ||
+    /\.csv$/i.test(n) || /\.xlsx?$/i.test(n)
+  );
+}
+
+/** Listaa kelvolliset tiedostot (uusin→vanhin). strict=true → suodata nimellä; jos ei löydy, palauta tyhjä. */
+function _pbi_listEligibleFilesNewestFirst_(folder, strict){
+  const out = [];
+  const it = folder.getFiles();
+  while (it.hasNext()){
+    const f = it.next();
+    const name = f.getName() || '';
+    const mime = f.getMimeType() || '';
+    if (!_isEligibleMime_(name, mime)) continue;
+    if (strict && !_isOutboundName_(name)) continue;
+    out.push(f);
+  }
+  out.sort(function(a,b){ return b.getDateCreated().getTime() - a.getDateCreated().getTime(); });
+  return out;
+}
+
+/** Haku (myös alikansiot, maxDepth varalta) */
+function _pbi_listEligibleFilesRecursive_(folder, strict, maxDepth){
+  const acc = _pbi_listEligibleFilesNewestFirst_(folder, strict);
+  if (maxDepth <= 0) return acc;
+  const subIt = folder.getFolders();
+  while (subIt.hasNext()){
+    const sub = subIt.next();
+    acc.push.apply(acc, _pbi_listEligibleFilesRecursive_(sub, strict, maxDepth-1));
+  }
+  acc.sort(function(a,b){ return b.getDateCreated().getTime() - a.getDateCreated().getTime(); });
+  return acc;
+}
+
+/** Päivitetty valitsin: yrittää 1) tiukka nimi, 2) kaikki kelvolliset, 3) myös alikansiot */
+function pbiImport_SelectAndImport(){
+  const folder = _pbi_getFolder_();
+  if (!folder){ try{SpreadsheetApp.getUi().alert('PBI_FOLDER_ID puuttuu. Aseta se ensin.');}catch(e){Logger.log('PBI_FOLDER_ID puuttuu.');} return; }
+
+  // 1) Outbound-nimiset vain
+  let files = _pbi_listEligibleFilesNewestFirst_(folder, /*strict*/true);
+
+  // 2) Jos ei löytynyt, listaa kaikki kelvolliset juuresta
+  let hint = '';
+  if (!files.length){
+    files = _pbi_listEligibleFilesNewestFirst_(folder, /*strict*/false);
+    hint = '<div style="color:#b45309;background:#fff7ed;border:1px solid #fde68a;padding:8px;border-radius:6px;margin:8px 0;">'
+         + 'Ei löytynyt <b>Outbound order</b> -nimisiä tiedostoja. Listataan kaikki kelvolliset (CSV/Sheets/Excel) kansiosta.</div>';
+  }
+
+  // 3) Jos vieläkään ei, haravoi alikansiot (maxDepth=2)
+  if (!files.length){
+    files = _pbi_listEligibleFilesRecursive_(folder, /*strict*/false, /*maxDepth*/2);
+    hint = '<div style="color:#1d4ed8;background:#eff6ff;border:1px solid #bfdbfe;padding:8px;border-radius:6px;margin:8px 0;">'
+         + 'Ei löytynyt kansiosta — listataan kelvolliset myös enintään kahdesta alikansiotasosta.</div>';
+  }
+
+  if (!files.length){
+    try{ SpreadsheetApp.getUi().alert('PBI-kansiossa (tai sen alikansioissa) ei ole tuettavia tiedostoja.'); }
+    catch(e){ Logger.log('Ei tuettavia tiedostoja PBI-kansiossa.'); }
+    return;
+  }
+
+  var options = files.map(function(f){
+    const created = Utilities.formatDate(f.getDateCreated(), Session.getScriptTimeZone()||'Europe/Helsinki', 'yyyy-MM-dd HH:mm');
+    const sizeStr = _fmtBytes_(f.getSize());
+    const label = `${created} — ${f.getName()} — ${sizeStr}`;
+    return `<option value="${f.getId()}">${label}</option>`;
+  }).join('');
+
+  const html = HtmlService.createHtmlOutput(
+    `<div style="font:14px system-ui;padding:12px">
+       <h3 style="margin:0 0 8px 0;">PBI-tuonti: valitse tiedosto</h3>
+       ${hint || ''}
+       <label for="f">Kelvolliset tiedostot (uusin ensin):</label>
+       <select id="f" style="width:100%;margin:8px 0 12px 0;">${options}</select>
+       <div id="msg" style="margin:6px 0 10px 0;color:#666;"></div>
+       <div style="display:flex;gap:8px">
+         <button onclick="imp()" style="padding:6px 12px">Tuo valittu</button>
+         <button onclick="google.script.host.close()" style="padding:6px 12px">Peruuta</button>
+       </div>
+       <script>
+         function imp(){
+           var id = document.getElementById('f').value;
+           if(!id){ alert('Valitse tiedosto.'); return; }
+           document.getElementById('msg').textContent = 'Tuodaan…';
+           google.script.run.withSuccessHandler(function(res){
+             var txt = '';
+             if(!res){ txt = 'Valmis.'; }
+             else if(res.status==='duplicate'){
+               txt = 'Dublikaatti: siirretty kansioon "${PBI_DUPLICATES_DIR}".';
+             }else if(res.status==='imported'){
+               txt = 'OK: ' + res.rows + ' riviä tuotu. Siirretty kansioon "${PBI_PROCESSED_DIR}".';
+             }else if(res.status==='error'){
+               txt = 'Virhe: siirretty kansioon "${PBI_ERRORS_DIR}".';
+             }else{
+               txt = 'Valmis.';
+             }
+             document.getElementById('msg').textContent = txt;
+           }).pbiImport_ByFileId(id);
+         }
+       </script>
+     </div>`
+  ).setWidth(560).setHeight(320).setTitle('PBI-tuonti');
+
+  try { SpreadsheetApp.getUi().showModalDialog(html, 'PBI-tuonti'); }
+  catch(e){ Logger.log('UI ei käytettävissä; dialogi ohitettu.'); }
+}
+
+
+
+// Lisää stagingiin: union-header + SourceFileName/Id/ImportedAt -metat
+function _pbi_appendToStaging_(rows, fileName, fileId){
+  if (!rows || !rows.length) return 0;
+  const header = rows[0].map(v => String(v||'').trim());
+  const data = rows.slice(1);
+
+  const ss = SpreadsheetApp.getActive();
+  let sh = ss.getSheetByName(PBI_STAGING_SHEET);
+  if (!sh) sh = ss.insertSheet(PBI_STAGING_SHEET);
+
+  // Hae nykyinen header stagingista
+  const existing = sh.getLastRow() ? sh.getRange(1,1,1,sh.getLastColumn()).getValues()[0].map(v=>String(v||'')) : [];
+  // Lisämetat mitä aina lisätään loppuun
+  const metaCols = ['SourceFileName','SourceFileId','ImportedAt'];
+
+  // Rakenna union-header (säilytä olemassa oleva järjestys, lisää uudet perään)
+  const union = existing.length ? existing.slice() : header.slice();
+  header.forEach(h => { if (union.indexOf(h) === -1) union.push(h); });
+  metaCols.forEach(h => { if (union.indexOf(h) === -1) union.push(h); });
+
+  // Jos header muuttui → kirjoita uusi header ja laajenna sarakkeet
+  if (!existing.length){
+    sh.clear();
+    sh.getRange(1,1,1,union.length).setValues([union]);
+    sh.setFrozenRows(1);
+  } else if (union.length > existing.length){
+    sh.getRange(1, existing.length+1, 1, union.length-existing.length).setValues([union.slice(existing.length)]);
+  }
+
+  // Mapit
+  const idxUnion = {}; union.forEach((h,i)=>idxUnion[h]=i);
+  const idxSrc   = { name: idxUnion['SourceFileName'], id: idxUnion['SourceFileId'], ts: idxUnion['ImportedAt'] };
+  const nowStr = Utilities.formatDate(new Date(), Session.getScriptTimeZone()||'Europe/Helsinki', 'yyyy-MM-dd HH:mm:ss');
+
+  // Muunna datarivit unioniin
+  const out = new Array(data.length);
+  for (var r=0;r<data.length;r++){
+    const row = data[r];
+    const line = new Array(union.length).fill('');
+    for (var c=0;c<header.length;c++){
+      const h = header[c];
+      const uIdx = idxUnion[h];
+      if (uIdx >= 0) line[uIdx] = row[c];
+    }
+    line[idxSrc.name] = fileName;
+    line[idxSrc.id]   = fileId;
+    line[idxSrc.ts]   = nowStr;
+    out[r] = line;
+  }
+
+  // Kirjoita loppuun
+  const startRow = sh.getLastRow() ? (sh.getLastRow() + 1) : 2;
+  if (startRow === 2 && sh.getLastRow() === 0){
+    // varmistus: jos sheet oli tyhjä
+    sh.getRange(1,1,1,union.length).setValues([union]);
+    sh.setFrozenRows(1);
+  }
+  sh.getRange(startRow, 1, out.length, union.length).setValues(out);
+
+  // Muotoilua
+  try{
+    sh.getRange(1,1,1,union.length).setFontWeight('bold').setBackground('#f6f8fa');
+    sh.autoResizeColumns(1, union.length);
+    sh.getRange(2, union.length-2, sh.getLastRow()-1, 1).setNumberFormat('@'); // SourceFileId tekstiksi
+    sh.getRange(2, union.length, sh.getLastRow()-1, 1).setNumberFormat('yyyy-mm-dd hh:mm:ss'); // ImportedAt
+  }catch(e){}
+
+  return out.length;
+}
+
+// Siirrä tiedosto turvallisesti toiseen kansioon (poista vanha kopio samannimisestä kohteesta)
+function _pbi_safeMove_(file, toFolder){
+  try{
+    const parents = file.getParents();
+    // Kopio DriveApp APIssa: file.moveTo(...) siirtää ensimmäiseen par. → käytetään add/remove -mallia:
+    toFolder.addFile(file);
+    while (parents.hasNext()) {
+      const p = parents.next();
+      if (p.getId() !== toFolder.getId()) p.removeFile(file);
+    }
+  }catch(e){}
+}
+
+// MD5-heksi
+function _pbi_md5hex_(bytes){
+  const digest = Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, bytes);
+  return digest.map(function(b){
+    const s = (b & 0xFF).toString(16);
+    return (s.length===1 ? '0' : '') + s;
+  }).join('');
+}
+
+// Lataa & tallenna md5-set
+function _pbi_loadMd5Set_(){
+  const P = PropertiesService.getScriptProperties();
+  const raw = P.getProperty(PBI_PROP_MD5KEY);
+  try{
+    const arr = raw ? JSON.parse(raw) : [];
+    return new Set(Array.isArray(arr) ? arr : []);
+  }catch(e){
+    return new Set();
+  }
+}
+function _pbi_saveMd5Set_(set){
+  const P = PropertiesService.getScriptProperties();
+  const arr = Array.from(set.values());
+  P.setProperty(PBI_PROP_MD5KEY, JSON.stringify(arr));
+}
