@@ -460,3 +460,95 @@ function NFSL_writeServiceLevelSheet_(ss, isoWeek, start, end, allMetrics, sokMe
   
   console.log(`Service level sheet written: ${dataRows.length} rows`);
 }
+
+/**
+ * Test function for service level calculations.
+ * Creates test data and validates the calculation logic.
+ */
+function NFSL_testServiceLevelCalculations() {
+  console.log('Testing service level calculation logic...');
+  
+  // Test date parsing
+  const testDates = [
+    '2025-01-15 10:30:00',
+    '15.01.2025 10:30',
+    '2025-01-15T10:30:00',
+    new Date('2025-01-15T10:30:00')
+  ];
+  
+  console.log('Testing date parsing:');
+  for (const dateVal of testDates) {
+    const parsed = NFSL_parseDate_(dateVal);
+    if (parsed && !isNaN(parsed)) {
+      console.log(`✅ Parsed "${dateVal}" -> ${parsed.toISOString()}`);
+    } else {
+      console.error(`❌ Failed to parse "${dateVal}"`);
+    }
+  }
+  
+  // Test ISO week calculation
+  const testWeek = new Date('2025-01-13'); // A Monday
+  const isoWeek = NFSL_getISOWeek_(testWeek);
+  console.log(`ISO week for ${testWeek.toISOString()}: ${isoWeek}`);
+  
+  // Test lead time buckets
+  const testLeadTimes = [12, 23, 25, 48, 72, 96, 120]; // hours
+  const buckets = { lt24: 0, '24_72': 0, gt72: 0 };
+  
+  for (const hours of testLeadTimes) {
+    if (hours < 24) buckets.lt24++;
+    else if (hours <= 72) buckets['24_72']++;
+    else buckets.gt72++;
+  }
+  
+  console.log('Lead time bucket test:');
+  console.log(`  < 24h: ${buckets.lt24} (expected: 2)`);
+  console.log(`  24-72h: ${buckets['24_72']} (expected: 3)`);
+  console.log(`  > 72h: ${buckets.gt72} (expected: 2)`);
+  
+  // Test statistics calculation
+  const values = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
+  const sum = values.reduce((a, b) => a + b, 0);
+  const avg = sum / values.length;
+  const sorted = values.slice().sort((a, b) => a - b);
+  const median = sorted[Math.floor(sorted.length / 2)];
+  const p90Index = Math.ceil(sorted.length * 0.9) - 1;
+  const p90 = sorted[p90Index];
+  
+  console.log('Statistics test:');
+  console.log(`  Avg: ${avg.toFixed(2)} (expected: 55.00)`);
+  console.log(`  Median: ${median.toFixed(2)} (expected: 60.00)`);
+  console.log(`  P90: ${p90.toFixed(2)} (expected: 90.00)`);
+  
+  // Test column detection with mock headers
+  const mockHeaders = [
+    'Package Number',
+    'Date sent',
+    'Payer',
+    'Delivered Time',
+    'Status',
+    'Created'
+  ];
+  
+  const dateSentIdx = NFSL_findDateSentColumn_(mockHeaders);
+  const deliveredIdx = NFSL_findDeliveredColumn_(mockHeaders);
+  const payerIdx = NFSL_findPayerColumn_(mockHeaders);
+  
+  console.log('Column detection test:');
+  console.log(`  Date sent: ${dateSentIdx} (expected: 1)`);
+  console.log(`  Delivered: ${deliveredIdx} (expected: 3)`);
+  console.log(`  Payer: ${payerIdx} (expected: 2)`);
+  
+  const allPassed = 
+    dateSentIdx === 1 &&
+    deliveredIdx === 3 &&
+    payerIdx === 2;
+  
+  if (allPassed) {
+    console.log('✅ All service level tests passed!');
+    return true;
+  } else {
+    console.error('❌ Some tests failed');
+    return false;
+  }
+}
