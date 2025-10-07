@@ -31,7 +31,8 @@ function NF_addBulkMenuItems() {
       .addSeparator()
       .addItem('Import from Drive Only', 'NF_BulkImportFromDrive')
       .addItem('Update Inventory Balances', 'NF_UpdateInventoryBalances')
-      .addItem('Build SOK/Kärkkäinen Always', 'NF_buildSokKarkkainenAlways');
+      .addItem('Build SOK/Kärkkäinen Always', 'NF_buildSokKarkkainenAlways')
+      .addItem('Rakenna viikkopalvelutaso (ALL/SOK/KRK)', 'NF_buildWeeklyServiceLevels');
     
     // Add to existing Shipment menu (if it exists)
     const shipmentMenu = ui.getMenu('Shipment');
@@ -331,6 +332,14 @@ function NF_weeklyReportBuild() {
     } else {
       console.log('Building SOK/Kärkkäinen reports as weekly fallback...');
       NF_buildSokKarkkainenAlways();
+    }
+    
+    // Build weekly service level report (guarded to prevent errors)
+    console.log('Building weekly service level report...');
+    if (typeof NF_buildWeeklyServiceLevels === 'function') {
+      NF_buildWeeklyServiceLevels();
+    } else {
+      console.warn('NF_buildWeeklyServiceLevels function not available');
     }
     
     console.log('Weekly report build completed successfully');
