@@ -1,212 +1,226 @@
-# New Flow (NF) - Delivery Lead Time Tracking System
+# NF Extension: Drive-based Bulk Imports & Inventory Reconciliation
 
-This module provides an end-to-end feature set for computing country-specific delivery lead times and building automated weekly reports for SOK and Kärkkäinen.
+This extension adds Drive-based bulk imports, inventory reconciliation, and backlog processing capabilities to the Shipment Tracking Toolkit, enabling end-to-end automation without overloading Apps Script quotas.
 
-## Features
+## New Features
 
-### Core Functionality
-- **Daily Flow**: Import nShift Packages reports from Gmail → rebuild tables → refresh statuses
-- **Weekly Reports**: Build SOK/Kärkkäinen reports with Sun→Sun windows + status refresh
-- **Delivery Analytics**: Per-shipment lead times and weekly country KPIs
-- **Automated Scheduling**: Weekday 12:00 daily flow + Monday 02:00 weekly reports
+### 🗂️ Drive Folder Auto-Import
+- Automatically scans Google Drive folder for latest files by type
+- Supports both CSV and XLSX files with Advanced Drive Service conversion
+- Case-insensitive filename pattern matching with whitespace tolerance
+- Imports to designated sheets based on file content type
 
-### Key Design Principles
-- **"Keikka tehty" Start Time**: Pickup date → Submitted date → Created date (PBI fallback)
-- **Tracking-Based Delivery**: Delivered times strictly from tracking events, not PBI timestamps
-- **Non-Conflicting**: All functions prefixed with `NF_` to avoid symbol clashes
-- **Reuses Existing Patterns**: Leverages Gmail import, status refresh, and weekly logic from current repo
+### 📊 Inventory Reconciliation
+- Cross-references ERP quants, 3PL warehouse balances, and Power BI data
+- Builds aggregated views and identifies discrepancies
+- Prefers Drive folder imports over OneDrive URLs
+- Creates reconciliation reports for inventory management
+
+### 🔄 Bulk Processing & Backfill
+- Complete end-to-end daily workflow orchestration
+- Batch tracking refresh with conservative limits to avoid quotas
+- Historical data backfill and duplicate detection across sources
+- Idempotent operations safe to rerun
+
+### 📅 Enhanced Scheduling
+- **Daily 00:01**: Inventory/balances update via Drive imports and reconcile
+- **Daily 11:00**: Gmail import and tracking refresh, keep weekly SOK/KRK reports current
+- **Weekly Mon 02:00**: Build comprehensive weekly SOK/KRK reports
 
 ## Installation
 
-### Step 1: Copy Files to Apps Script
-Copy these new files into your Google Apps Script project:
-- `NF_Main.gs`
-- `NF_SOK_KRK_Weekly.gs`
-- `NF_Leadtime_Weekly.gs`
-- `NF_Menu_Triggers.gs`
+### 1. Script Properties Setup
+Add the following required Script Property:
 
-### Step 2: Install Menu Trigger
-1. In Apps Script, run the function `NF_installMenuTrigger` once
-2. Refresh your Google Sheets page
-3. You should see "New Flow" menu items under "Tracking" menu
-
-### Step 3: Configure Script Properties
-Set these required Script Properties (File → Project properties → Script properties):
-
-#### Required Properties
-- `SOK_FREIGHT_ACCOUNT`: SOK freight account number (default: `990719901`)
-- `KARKKAINEN_NUMBERS`: Comma-separated Kärkkäinen numbers (default: `615471,802669,7030057`)
-- `TARGET_SHEET`: Main packages sheet name (default: `Packages`)
-- `ARCHIVE_SHEET`: Archive sheet name (default: `Packages_Archive`)
-
-#### Gmail Configuration
-- `GMAIL_QUERY_PACKAGES`: Gmail search for nShift reports (default: `label:"Shipment Report" has:attachment (filename:xlsx OR filename:csv)`)
-- `ATTACH_ALLOW_REGEX`: Regex for allowed attachment names (default: `(?:^|\\b)(Packages[ _-]?Report)(?:\\b|$)`)
-
-#### Optional Properties
-- `ACTION_SHEET`: Pending actions sheet (default: `Vaatii_toimenpiteitä`)
-- `PBI_FOLDER_ID`: Power BI Drive folder ID (if using PBI import)
-- `PBI_WEBHOOK_URL`: Power BI webhook URL (if using PBI integration)
-
-### Step 4: Enable Required Services
-In Apps Script, ensure these advanced services are enabled:
-- **Drive API**: Required for XLSX → Sheets conversion
-- **Gmail API**: Required for attachment processing
-
-### Step 5: Install Automation Triggers (Optional)
-Use the menu to install automated triggers:
-- **"Install weekday 12:00"**: Daily flow on weekdays at noon
-- **"Install weekly Mon 02:00"**: Weekly reports every Monday at 2 AM
-
-## Usage
-
-### Manual Operations
-Access these from the "New Flow" menu:
-
-#### Daily Operations
-- **"Run daily flow now"**: Import latest nShift Packages report and rebuild tables
-- **"Build SOK & Kärkkäinen (last week)"**: Create weekly reports for last finished week
-
-#### Analytics
-- **"Delivery Times list"**: Generate detailed per-shipment lead time analysis
-- **"Country Week Leadtime"**: Create weekly KPI by country and carrier
-
-#### Administration
-- **"Install weekday 12:00"**: Setup daily automation
-- **"Install weekly Mon 02:00"**: Setup weekly automation  
-- **"Remove NF triggers"**: Remove all New Flow triggers
-- **"Show NF status"**: Check configuration and system status
-
-### Automated Operations
-Once triggers are installed:
-- **Weekdays at 12:00**: Automatically runs daily flow (import → rebuild → refresh)
-- **Mondays at 02:00**: Automatically builds weekly reports and refreshes their statuses
-
-## Data Sources and Logic
-
-### Start Time ("Keikka Tehty") Priority
-1. **Pick up date** (from nShift Packages report) - preferred
-2. **Submitted date** (from nShift Packages report) - fallback
-3. **Created date** (from Power BI report) - last resort
-
-### Delivered Time Sources
-**Only from tracking refresh** - never from Power BI timestamps:
-1. **"Delivered date (Confirmed)"** - manually confirmed deliveries
-2. **"Delivered Time"** - from tracking API responses
-3. **"RefreshTime"** - timestamp of last successful tracking refresh
-
-### Weekly Window Definition
-- **Sunday → Sunday**: Matches existing weekly report logic
-- **"Last finished week"**: Previous complete week (not current partial week)
-
-### SOK/Kärkkäinen Classification
-- **SOK**: Matches `SOK_FREIGHT_ACCOUNT` (digits only)
-- **Kärkkäinen**: Matches any number in `KARKKAINEN_NUMBERS` (digits only)
-- Based on "Payer", "Freight account", or similar fields
-
-## Data Flow
-
-### Daily Flow (`NF_RunDailyFlow`)
-1. Search Gmail for latest nShift "Packages Report" attachment
-2. Download and convert XLSX/CSV to data matrix
-3. Merge with existing Packages/Archive data (unified headers)
-4. Optionally refresh statuses on action sheet
-
-### Weekly Reports (`NF_BuildWeeklyReports`)
-1. Calculate last finished Sunday→Sunday window
-2. Filter TARGET_SHEET data by date window
-3. Split by freight payer into SOK/Kärkkäinen
-4. Write Report_SOK and Report_Karkkainen sheets with info headers
-5. Refresh tracking statuses for both weekly sheets
-
-### Analytics (`NF_BuildDeliveryTimes` + `NF_MakeCountryWeekLeadtime`)
-1. Process all shipments with start time and delivered time
-2. Calculate lead times in days
-3. Create detailed list (Delivery_Times sheet)
-4. Pivot by ISO week + country for KPI view (Leadtime_Weekly_Country sheet)
-
-## Output Sheets
-
-### Weekly Reports
-- **Report_SOK**: SOK shipments for last week with info header
-- **Report_Karkkainen**: Kärkkäinen shipments for last week with info header
-
-### Analytics Sheets  
-- **Delivery_Times**: Per-shipment analysis with lead times and source traceability
-- **Leadtime_Weekly_Country**: Weekly KPI by country and carrier
-
-### Info Headers Format
-Weekly sheets include metadata rows:
 ```
-Row 1: Column headers
-Row 2: Week (SUN→SUN): 2025-01-05 - 2025-01-12 | Rows: 150 | Created: 2025-01-13 08:30:15
-Row 3: (empty)
-Row 4+: Data rows
+DRIVE_IMPORT_FOLDER_ID = 1yAkYYR6hetV3XATEJqg7qvy5NAJrFgKh
 ```
 
-## Compatibility
+**To set Script Properties:**
+1. Open Apps Script editor
+2. Go to Project Settings (gear icon)
+3. Scroll to Script Properties section
+4. Add the property above
 
-### Existing Function Reuse
-- `refreshStatuses_Sheet`: For status refresh operations
-- `ensureRefreshCols_`: For refresh column management  
-- `headerIndexMap_`: For header mapping
-- `sanitizeMatrix_`: For data cleanup
-- `TRK_trackByCarrierEnhanced`: Preferred tracking engine
-- `TRK_trackByCarrier`: Fallback tracking engine
+### 2. Enable Advanced Services
+Enable the **Google Drive API** advanced service:
+1. In Apps Script editor, go to Services (+ icon)
+2. Add "Drive API" service
+3. This enables XLSX to Google Sheets conversion
 
-### Script Properties Alignment
-Uses same property keys as existing codebase:
-- `SOK_FREIGHT_ACCOUNT`, `KARKKAINEN_NUMBERS`
-- `TARGET_SHEET`, `ARCHIVE_SHEET`
-- `GMAIL_QUERY`, `ATTACH_ALLOW_REGEX`
+### 3. Deploy Files
+All NF_ files are additive and safe to deploy alongside existing code:
+- `NF_Drive_Imports.gs` - Drive folder scanning and import automation
+- `NF_Bulk_Backfill.gs` - Bulk processing orchestration
+- `NF_Inventory_Balance.gs` - Inventory reconciliation logic
+- `NF_SOK_KRK_Weekly.gs` - Weekly report management
+- `NF_Menu_Triggers.gs` - Menu additions and scheduling
 
-### Safety Features
-- All functions prefixed with `NF_` to avoid naming conflicts
-- Trigger management only affects `NF_*` functions
-- Fallback implementations for missing helper functions
-- Non-destructive operations (no deletion of existing data/functions)
+## File Type Recognition
+
+The system auto-detects file types based on filename patterns (case-insensitive):
+
+| File Type | Filename Contains | Target Sheet |
+|-----------|-------------------|--------------|
+| **ERP Quants** | `quants` | `Import_Quants` |
+| **Warehouse Balance** | `warehouse balance` \| `warehouse_balance` \| `3pl balance` | `Import_Warehouse_Balance` |
+| **ERP Stock Picking** | `stock picking` \| `erp picking` | `Import_ERP_StockPicking` |
+| **PBI Deliveries** | `deliveries` \| `pbi deliveries` \| `pbi_shipment` \| `pbi_outbound` | `Import_Weekly` |
+| **PBI Balances** | `pbi balance` \| `pbi stock` \| `pbi inventory` | `Import_PBI_Balance` |
+
+### Example Filenames
+✅ **Recognized:**
+- `ERP_Quants_2025-01-15.xlsx`
+- `Warehouse Balance Report.csv`
+- `PBI_Deliveries_Weekly.xlsx`
+- `Stock Picking Export (12).csv`
+
+❌ **Not Recognized:**
+- `Daily_Report.xlsx` (no matching pattern)
+- `inventory.txt` (unsupported format)
+
+## New Menu Items
+
+### Bulk Operations Menu
+- **Import from Drive + Rebuild All** → `NF_BulkRebuildAll()` - Complete daily workflow
+- **Refresh All Pending (100)** → `NF_RefreshAllPending()` - Batch tracking refresh
+- **Find Duplicates (All Sources)** → `NF_BulkFindDuplicates_All()` - Cross-source duplicate detection
+- **Import from Drive Only** → `NF_BulkImportFromDrive()` - Drive import without processing
+- **Update Inventory Balances** → `NF_UpdateInventoryBalances()` - Inventory reconciliation only
+- **Build SOK/Kärkkäinen Always** → `NF_buildSokKarkkainenAlways()` - Historical report merge
+
+### NF Scheduling Menu
+- **Setup Daily 00:01 (Inventory)** - Schedule inventory updates
+- **Setup Daily 11:00 (Tracking)** - Schedule tracking refresh + reports
+- **Setup Weekly Mon 02:00 (Reports)** - Schedule weekly report builds
+- **Clear NF Triggers** - Remove all NF-related triggers
+- **List Active Triggers** - View currently scheduled triggers
+
+## Key Functions
+
+### Drive Import Functions
+```javascript
+NF_Drive_ImportLatestAll()                    // Import all file types from Drive folder
+NF_Drive_PickLatestFileByPattern_(folderId, patterns)  // Find most recent matching file
+NF_Drive_ReadCsvOrXlsxToSheet_(file, sheetName)       // Read file data to sheet
+```
+
+### Bulk Processing Functions
+```javascript
+NF_BulkRebuildAll()                          // Complete daily workflow sequence
+NF_RefreshAllPending(limitPerRun)            // Batch refresh tracking statuses
+NF_BulkFindDuplicates_All()                  // Cross-source duplicate detection
+```
+
+### Inventory Functions
+```javascript
+NF_UpdateInventoryBalances()                 // Main inventory reconciliation
+NF_BuildQuantsAggregate()                    // Aggregate quants by article
+NF_ReconcileInventory()                      // Compare ERP vs 3PL vs PBI
+```
+
+### Weekly Report Functions
+```javascript
+NF_buildSokKarkkainenAlways()                // Historical SOK/Kärkkäinen merge
+NF_ReconcileWeeklyFromImport()               // Append missing deliveries
+NF_getLastFinishedWeekSunWindow_()           // Get last Sunday-Sunday week
+```
+
+## Data Flow & Processing
+
+### Daily 00:01 - Inventory Update
+1. Scan Drive folder for latest inventory files
+2. Import Quants and Warehouse Balance data
+3. Build aggregated views and reconciliation reports
+4. Update inventory balance sheets
+
+### Daily 11:00 - Tracking & Reports  
+1. Run Gmail import and tracking refresh
+2. Build/update SOK and Kärkkäinen reports with all historical data
+3. Reconcile weekly reports with any new PBI deliveries
+4. Batch refresh pending tracking statuses (limited)
+
+### Weekly Monday 02:00 - Weekly Reports
+1. Build comprehensive weekly SOK/Kärkkäinen reports
+2. Process full historical data merge
+3. Generate summary statistics
+
+## Quota Management & Throttling
+
+### Conservative Limits
+- **Batch Size**: Max 100 tracking calls per bulk refresh
+- **Rate Limiting**: 500ms sleep between API calls
+- **Error Handling**: Automatic backoff on rate limits (429 errors)
+- **Idempotent**: Safe to rerun operations without duplicating data
+
+### Monitoring
+- All operations log to console with detailed progress
+- Error logging to `Error_Log` sheet for trigger failures
+- Rate limit detection with automatic retry delays
+
+## Data Sources & Truth Hierarchy
+
+### Source Priority (nShift = ground truth)
+1. **nShift (Gmail)** - Delivered timestamps and tracking events (never overwritten)
+2. **ERP Systems** - Stock picking, quants/balances
+3. **3PL Systems** - Warehouse balance verification
+4. **Power BI** - Deliveries and balances (reconciled, not overwriting)
+
+### Reconciliation Logic
+- ERP vs 3PL vs PBI quantity comparisons
+- Duplicate detection across Reference + Article + DeliveryPlace
+- Historical data preservation with source tracking
 
 ## Troubleshooting
 
 ### Common Issues
 
-**Menu not appearing**: 
-- Run `NF_installMenuTrigger` in Apps Script
-- Refresh the Google Sheets page
+**"DRIVE_IMPORT_FOLDER_ID not configured"**
+- Add the Script Property with the correct folder ID
+- Verify folder access permissions
 
-**"No nShift Packages report found"**:
-- Check `GMAIL_QUERY_PACKAGES` property
-- Verify Gmail labels and attachment names
-- Check `ATTACH_ALLOW_REGEX` pattern
+**"Required columns not found"**
+- Check file headers match expected patterns
+- Files need Article, Location, Quantity columns for inventory
+- Case-insensitive matching is enabled
 
-**Empty weekly reports**:
-- Verify `SOK_FREIGHT_ACCOUNT` and `KARKKAINEN_NUMBERS` properties
-- Check that payer column exists in data
-- Ensure date filtering is working (verify date column names)
+**"Failed to convert XLSX file"**
+- Ensure Drive API advanced service is enabled
+- Check file format and content validity
 
-**Missing delivered times**:
-- Run status refresh on source sheets first
-- Check tracking engine availability (`TRK_trackByCarrierEnhanced`)
-- Verify tracking codes and carrier names
+**Rate Limiting (429 errors)**
+- System automatically handles with backoff
+- Reduce batch sizes if persistent issues occur
 
-**Trigger failures**:
-- Check Script Properties configuration
-- Verify required sheets exist (Packages, Packages_Archive)
-- Review execution logs in Apps Script
+### Debug Mode
+Enable console logging to monitor operations:
+```javascript
+// All NF functions include detailed console.log statements
+// Check Apps Script execution log for detailed progress
+```
 
-### Status Check
-Run **"Show NF status"** from the menu to check:
-- Installed triggers
-- Script Properties configuration  
-- Required sheets existence
-- Tracking engine availability
+## Migration Notes
+
+### From OneDrive to Drive Folder
+- Drive folder import takes precedence when `DRIVE_IMPORT_FOLDER_ID` is configured
+- OneDrive URLs remain as fallback option
+- Existing data and sheets are preserved
+
+### Compatibility
+- All NF_ functions are additive and non-breaking
+- Existing menu items and triggers are preserved
+- Legacy function calls remain functional
 
 ## Support
 
-For issues specific to this New Flow module:
-1. Check the status using "Show NF status" menu item
-2. Review Script Properties configuration
-3. Verify all required files are copied to Apps Script
-4. Check execution logs for specific error messages
+For issues or questions:
+1. Check Apps Script execution logs for detailed error messages
+2. Verify Script Properties configuration
+3. Ensure Drive folder contains properly named files
+4. Confirm Advanced Drive Service is enabled
 
-The module is designed to work alongside existing functionality without conflicts.
+---
+
+**Version**: NF Extension 1.0  
+**Compatibility**: Apps Script with Drive API advanced service  
+**Requirements**: Google Drive folder access, proper Script Properties setup

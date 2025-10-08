@@ -55,6 +55,7 @@ function SeedDefaultsOverwrite(){
   /** --------- Gmail & Drive --------- **/
   put('GMAIL_QUERY_PACKAGES','label:"package report" OR subject:"Packages Report" newer_than:90d');
   put('PBI_FOLDER_ID','1G6OyD9vNKq2DTT2YlNfGc48Mt3QPA_Un');
+  put('DRIVE_IMPORT_FOLDER_ID','1yAkYYR6hetV3XATEJqg7qvy5NAJrFgKh');
 
   /** --------- Taulujen nimet --------- **/
   put('ACTION_SHEET','Vaatii_toimenpiteitä');
