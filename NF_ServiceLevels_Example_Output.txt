@@ -1,0 +1,105 @@
+================================================================================
+EXAMPLE OUTPUT: NF_Weekly_ServiceLevels Sheet
+================================================================================
+
+Row 1 (Headers):
++----------+------------+-------------+----------------+--------------+---------+----------+---------+------------------------+---------------------------+-----------------------+----------+-------------+----------+
+| ISOWeek  | Group      | OrdersTotal | DeliveredTotal | PendingTotal | LTlt24h | LT24_72h | LTgt72h | Pct_lt24h_of_delivered | Pct_24_72h_of_delivered  | Pct_gt72h_of_delivered| AvgHours | MedianHours | P90Hours |
++----------+------------+-------------+----------------+--------------+---------+----------+---------+------------------------+---------------------------+-----------------------+----------+-------------+----------+
+
+Row 2 (Info):
++-------------------------------------------------------------+----------------------------+
+| Week (SUN→SUN): 2025-01-05 - 2025-01-12                    | Created: 2025-01-15T...   |
++-------------------------------------------------------------+----------------------------+
+
+Row 3 (ALL group):
+| 2025-W01 | ALL        | 150         | 120            | 30           | 50      | 60       | 10      | 41.67                  | 50.00                    | 8.33                  | 36.50    | 42.00       | 78.00    |
+
+Row 4 (SOK group):
+| 2025-W01 | SOK        | 80          | 70             | 10           | 30      | 35       | 5       | 42.86                  | 50.00                    | 7.14                  | 35.20    | 40.00       | 75.00    |
+
+Row 5 (KARKKAINEN group):
+| 2025-W01 | KARKKAINEN | 30          | 25             | 5            | 10      | 12       | 3       | 40.00                  | 48.00                    | 12.00                 | 38.50    | 45.00       | 82.00    |
+
+================================================================================
+INTERPRETATION
+================================================================================
+
+Week: 2025-W01 (Sun 2025-01-05 to Sun 2025-01-12)
+
+ALL Group Summary:
+  - Total orders: 150
+  - Delivered: 120 (80%)
+  - Pending: 30 (20%)
+  
+  Service Level Performance:
+  - Express (< 24h): 50 deliveries (41.67% of delivered)
+  - Standard (24-72h): 60 deliveries (50.00% of delivered)
+  - Delayed (> 72h): 10 deliveries (8.33% of delivered)
+  
+  Lead Time Statistics:
+  - Average: 36.5 hours
+  - Median: 42.0 hours
+  - 90th percentile: 78.0 hours
+  
+  → Interpretation: Most deliveries (91.67%) meet 72-hour SLA
+
+SOK Group Summary:
+  - Total orders: 80 (53% of all orders)
+  - Delivered: 70 (87.5%)
+  - Pending: 10 (12.5%)
+  
+  Service Level Performance:
+  - Express: 30 deliveries (42.86%)
+  - Standard: 35 deliveries (50.00%)
+  - Delayed: 5 deliveries (7.14%)
+  
+  Lead Time Statistics:
+  - Average: 35.2 hours (faster than overall)
+  - Median: 40.0 hours
+  - 90th percentile: 75.0 hours
+  
+  → Interpretation: SOK orders perform slightly better than average
+
+KARKKAINEN Group Summary:
+  - Total orders: 30 (20% of all orders)
+  - Delivered: 25 (83.3%)
+  - Pending: 5 (16.7%)
+  
+  Service Level Performance:
+  - Express: 10 deliveries (40.00%)
+  - Standard: 12 deliveries (48.00%)
+  - Delayed: 3 deliveries (12.00%)
+  
+  Lead Time Statistics:
+  - Average: 38.5 hours (slightly slower than average)
+  - Median: 45.0 hours
+  - 90th percentile: 82.0 hours
+  
+  → Interpretation: Kärkkäinen has higher delayed rate (12% vs 8.33% overall)
+
+================================================================================
+USAGE EXAMPLES
+================================================================================
+
+1. Check weekly performance trend:
+   - Compare P90Hours across weeks to spot degradation
+   - Monitor Pct_gt72h_of_delivered for SLA compliance
+   - Track DeliveredTotal vs OrdersTotal for completion rate
+
+2. Compare customer groups:
+   - SOK: 42.86% express vs KARKKAINEN: 40.00%
+   - SOK: 35.2h avg vs KARKKAINEN: 38.5h avg
+   - Identify if specific customers need attention
+
+3. Set alerts:
+   - Alert if Pct_gt72h_of_delivered > 10%
+   - Alert if AvgHours > 48 (more than 2 days)
+   - Alert if PendingTotal > 20% of OrdersTotal
+
+4. Business intelligence:
+   - Use data for capacity planning
+   - Identify peak delivery times
+   - Benchmark against industry standards
+
+================================================================================

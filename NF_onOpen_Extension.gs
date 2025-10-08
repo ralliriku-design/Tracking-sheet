@@ -107,6 +107,7 @@ function NF_enhancedOnOpen() {
         .addItem('Import from Drive Only', 'NF_BulkImportFromDrive')
         .addItem('Update Inventory Balances', 'NF_UpdateInventoryBalances')
         .addItem('Build SOK/Kärkkäinen Always', 'NF_buildSokKarkkainenAlways')
+        .addItem('Rakenna viikkopalvelutaso (ALL/SOK/KRK)', 'NF_buildWeeklyServiceLevels')
     )
     .addSubMenu(
       ui.createMenu('Adhoc (Power BI / XLSX)')
