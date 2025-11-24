@@ -38,6 +38,7 @@ function NF_makeDeliveryTimeReport() {
   const createdIdx = NF_colIndexOf_(headerMap, ['Created Date', 'Created']);
   const deliveredIdx = NF_colIndexOf_(headerMap, ['Delivered Time', 'Delivered At', 'Delivered']);
   const refreshTimeIdx = NF_colIndexOf_(headerMap, ['RefreshTime']);
+  const refreshStatusIdx = NF_colIndexOf_(headerMap, ['RefreshStatus', 'Refresh Status']);
   const confirmedDeliveredIdx = NF_colIndexOf_(headerMap, ['Delivered date (Confirmed)']);
   
   const resultRows = [['Carrier', 'DestCountry', 'Start(keikka tehty)', 'Delivered', 'LeadTime(days)', 'Source', 'Submitted', 'Pickup', 'Created']];
@@ -51,14 +52,22 @@ function NF_makeDeliveryTimeReport() {
     const pickup = row[pickupIdx] || '';
     const created = row[createdIdx] || '';
     
-    // Pick delivered time (prefer confirmed → delivered → refresh time)
+    // Pick delivered time (FIXED: RefreshTime only if status indicates delivered)
+    // Priority: confirmed → delivered → refresh time (only if status = delivered)
     let delivered = '';
     if (confirmedDeliveredIdx >= 0 && row[confirmedDeliveredIdx]) {
       delivered = row[confirmedDeliveredIdx];
     } else if (deliveredIdx >= 0 && row[deliveredIdx]) {
       delivered = row[deliveredIdx];
-    } else if (refreshTimeIdx >= 0 && row[refreshTimeIdx]) {
-      delivered = row[refreshTimeIdx];
+    } else if (refreshTimeIdx >= 0 && row[refreshTimeIdx] && refreshStatusIdx >= 0) {
+      // Only use RefreshTime if RefreshStatus indicates delivered
+      const status = String(row[refreshStatusIdx] || '').toLowerCase();
+      if (status.includes('delivered') || 
+          status.includes('toimitettu') || 
+          status.includes('luovutettu') ||
+          status.includes('utlevert')) {
+        delivered = row[refreshTimeIdx];
+      }
     }
     
     // "Keikka tehty" start time priority: pickup → submitted → created

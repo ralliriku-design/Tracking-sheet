@@ -256,31 +256,63 @@ function NF_parseStartTime_(row, headerMap) {
 }
 
 /**
- * Pick delivered time from tracking refresh, prefer Delivered Time or RefreshTime
+ * Pick delivered time from tracking refresh.
+ * 
+ * IMPORTANT: RefreshTime should NOT be used as delivery time by itself!
+ * RefreshTime = last time we checked tracking status (not when package delivered)
+ * 
+ * Priority logic (FIXED):
+ * 1. "Delivered date (Confirmed)" - PBI confirmed delivery (most reliable)
+ * 2. "Delivered Time" / "Delivered At" - from tracking events when delivered
+ * 3. "RefreshTime" ONLY if RefreshStatus indicates delivery (e.g., "Delivered", "Toimitettu")
+ * 
+ * This fixes the issue where RefreshTime was incorrectly used as delivery date
+ * even when package was still in transit.
+ * 
+ * @param {Array} row - Data row
+ * @param {Object} headerMap - Header index map
+ * @return {Object} {time: date string, source: source name}
  */
 function NF_pickDeliveredTime_(row, headerMap) {
   const deliveredIdx = NF_colIndexOf_(headerMap, ['Delivered Time', 'Delivered At', 'Delivered']);
   const refreshIdx = NF_colIndexOf_(headerMap, ['RefreshTime']);
+  const refreshStatusIdx = NF_colIndexOf_(headerMap, ['RefreshStatus', 'Refresh Status']);
   const confirmedIdx = NF_colIndexOf_(headerMap, ['Delivered date (Confirmed)']);
   
   let time = '';
-  let source = 'tracking';
+  let source = 'none';
   
+  // Priority 1: Confirmed delivery from PBI
   if (confirmedIdx >= 0 && row[confirmedIdx]) {
     time = row[confirmedIdx];
     source = 'confirmed';
-  } else if (deliveredIdx >= 0 && row[deliveredIdx]) {
-    time = row[deliveredIdx];
-    source = 'delivered';
-  } else if (refreshIdx >= 0 && row[refreshIdx]) {
-    time = row[refreshIdx];
-    source = 'refresh';
+    return { time: time, source: source };
   }
   
-  return {
-    time: time,
-    source: source
-  };
+  // Priority 2: Delivered Time from tracking events
+  if (deliveredIdx >= 0 && row[deliveredIdx]) {
+    time = row[deliveredIdx];
+    source = 'delivered';
+    return { time: time, source: source };
+  }
+  
+  // Priority 3: RefreshTime ONLY if status indicates delivered
+  // Check RefreshStatus to ensure package is actually delivered
+  if (refreshIdx >= 0 && row[refreshIdx] && refreshStatusIdx >= 0) {
+    const status = String(row[refreshStatusIdx] || '').toLowerCase();
+    // Only use RefreshTime if status clearly indicates delivery
+    if (status.includes('delivered') || 
+        status.includes('toimitettu') || 
+        status.includes('luovutettu') ||
+        status.includes('utlevert')) {
+      time = row[refreshIdx];
+      source = 'refresh_delivered';
+      return { time: time, source: source };
+    }
+  }
+  
+  // No delivery date found
+  return { time: '', source: 'none' };
 }
 
 /**
