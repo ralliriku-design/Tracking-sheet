@@ -930,6 +930,8 @@ function tryScanAcrossCarriers_(id, opts) {
  * - Denmark (DK): 3 days
  * - Estonia (EE): 2 days
  * - Default: 5 days for unknown countries
+ * 
+ * Note: Both 'UK' and 'GB' are supported for United Kingdom (GB is official ISO code)
  */
 var SLA_RAJAT = {
   'FI': 2,    // Finland - domestic, fast delivery
@@ -946,8 +948,8 @@ var SLA_RAJAT = {
   'FR': 5,    // France - Western Europe
   'ES': 5,    // Spain - Southern Europe
   'IT': 5,    // Italy - Southern Europe
-  'UK': 4,    // United Kingdom
-  'GB': 4     // Great Britain (alternative code)
+  'GB': 4,    // Great Britain (official ISO code)
+  'UK': 4     // United Kingdom (common alternative code)
 };
 
 var ACCEPTED_PATTERNS_ = [
