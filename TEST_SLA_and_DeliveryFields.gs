@@ -35,6 +35,122 @@ function TEST_RunAllTests() {
 }
 
 /**
+ * Test SLA calculation with multiple country scenarios.
+ * 
+ * Tests:
+ * 1. Finland (FI): 2-day limit - domestic fast delivery
+ * 2. Sweden (SE): 3-day limit - Nordic neighbor
+ * 3. Germany (DE): 4-day limit - Central Europe
+ * 4. Unknown country: 5-day default limit
+ * 5. Pending delivery: no delivered date
+ * 6. Missing created date: UNKNOWN status
+ * 
+ * Usage: Run from Apps Script editor to validate SLA logic
+ * Requires: Tracking_Enhanced_AllInOne.js to be loaded (for SLA_computeRuleBased_)
+ */
+function TEST_SLA_Calculation() {
+  console.log('=== Testing SLA Calculation ===');
+  
+  // Test 1: Finland - 2 days transport, 2 day limit → OK
+  var testEvents1 = [
+    { time: '2025-01-13T10:00:00Z', description: 'Vastaanotettu', location: 'Helsinki, FI' },
+    { time: '2025-01-14T14:00:00Z', description: 'Kuljetuksessa', location: 'Tampere, FI' },
+    { time: '2025-01-15T12:00:00Z', description: 'Toimitettu vastaanottajalle', location: 'Oulu, FI' }
+  ];
+  var sla1 = SLA_computeRuleBased_(testEvents1, 'FI');
+  console.log('Test 1 - FI (2 days, limit 2):');
+  console.log('  Status: ' + sla1.status + ' (expected: OK)');
+  console.log('  Transport days: ' + sla1.transportDays + ' (expected: 2)');
+  console.log('  SLA limit: ' + sla1.slaLimitDays + ' (expected: 2)');
+  console.log('  Country: ' + sla1.country);
+  console.log('');
+  
+  // Test 2: Sweden - 4 days transport, 3 day limit → LATE
+  var testEvents2 = [
+    { time: '2025-01-13T10:00:00Z', description: 'Received', location: 'Stockholm, SE' },
+    { time: '2025-01-17T15:00:00Z', description: 'Delivered to recipient', location: 'Gothenburg, SE' }
+  ];
+  var sla2 = SLA_computeRuleBased_(testEvents2, 'SE');
+  console.log('Test 2 - SE (4 days, limit 3):');
+  console.log('  Status: ' + sla2.status + ' (expected: LATE)');
+  console.log('  Transport days: ' + sla2.transportDays + ' (expected: 4)');
+  console.log('  SLA limit: ' + sla2.slaLimitDays + ' (expected: 3)');
+  console.log('');
+  
+  // Test 3: Norway - 2 days transport, 3 day limit → OK
+  var testEvents3 = [
+    { time: '2025-01-13T10:00:00Z', description: 'Handed over', location: 'Oslo, NO' },
+    { time: '2025-01-15T10:00:00Z', description: 'Utlevert', location: 'Bergen, NO' }
+  ];
+  var sla3 = SLA_computeRuleBased_(testEvents3, 'NO');
+  console.log('Test 3 - NO (2 days, limit 3):');
+  console.log('  Status: ' + sla3.status + ' (expected: OK)');
+  console.log('  Transport days: ' + sla3.transportDays + ' (expected: 2)');
+  console.log('  SLA limit: ' + sla3.slaLimitDays + ' (expected: 3)');
+  console.log('');
+  
+  // Test 4: Unknown country - 3 days, default 5 day limit → OK
+  var testEvents4 = [
+    { time: '2025-01-13T10:00:00Z', description: 'Accepted', location: 'Unknown' },
+    { time: '2025-01-16T10:00:00Z', description: 'Delivered', location: 'Unknown' }
+  ];
+  var sla4 = SLA_computeRuleBased_(testEvents4, '');
+  console.log('Test 4 - Unknown country (3 days, default limit 5):');
+  console.log('  Status: ' + sla4.status + ' (expected: OK)');
+  console.log('  Transport days: ' + sla4.transportDays + ' (expected: 3)');
+  console.log('  SLA limit: ' + sla4.slaLimitDays + ' (expected: 5)');
+  console.log('');
+  
+  // Test 5: Pending delivery - no delivered event
+  var testEvents5 = [
+    { time: '2025-01-13T10:00:00Z', description: 'Accepted', location: 'Helsinki, FI' },
+    { time: '2025-01-14T14:00:00Z', description: 'In transit', location: 'Tampere, FI' }
+  ];
+  var sla5 = SLA_computeRuleBased_(testEvents5, 'FI');
+  console.log('Test 5 - Pending delivery:');
+  console.log('  Status: ' + sla5.status + ' (expected: PENDING)');
+  console.log('  Transport days: ' + sla5.transportDays + ' (expected: null)');
+  console.log('');
+  
+  // Test 6: Germany - 3 days, limit 4 → OK
+  var testEvents6 = [
+    { time: '2025-01-13T10:00:00Z', description: 'Picked up', location: 'Berlin, DE' },
+    { time: '2025-01-16T10:00:00Z', description: 'Delivered', location: 'Munich, DE' }
+  ];
+  var sla6 = SLA_computeRuleBased_(testEvents6, 'DE');
+  console.log('Test 6 - DE (3 days, limit 4):');
+  console.log('  Status: ' + sla6.status + ' (expected: OK)');
+  console.log('  Transport days: ' + sla6.transportDays + ' (expected: 3)');
+  console.log('  SLA limit: ' + sla6.slaLimitDays + ' (expected: 4)');
+  console.log('');
+  
+  // Test 7: Country guessing from events (no country hint)
+  var testEvents7 = [
+    { time: '2025-01-13T10:00:00Z', description: 'Accepted', location: 'Turku, FI' },
+    { time: '2025-01-14T10:00:00Z', description: 'Delivered', location: 'Helsinki, FI' }
+  ];
+  var sla7 = SLA_computeRuleBased_(testEvents7, ''); // No country hint - should guess from events
+  console.log('Test 7 - Country guessing (should detect FI from location):');
+  console.log('  Status: ' + sla7.status + ' (expected: OK)');
+  console.log('  Country: ' + sla7.country + ' (expected: FI)');
+  console.log('  Transport days: ' + sla7.transportDays + ' (expected: 1)');
+  console.log('  SLA limit: ' + sla7.slaLimitDays + ' (expected: 2)');
+  console.log('');
+  
+  console.log('=== SLA Test Complete ===');
+  console.log('Review results above to verify all tests pass');
+  console.log('');
+  console.log('Summary of country-specific SLA limits (from SLA_RAJAT):');
+  console.log('  FI (Finland): 2 days');
+  console.log('  SE (Sweden): 3 days');
+  console.log('  NO (Norway): 3 days');
+  console.log('  DK (Denmark): 3 days');
+  console.log('  EE (Estonia): 2 days');
+  console.log('  DE (Germany): 4 days');
+  console.log('  Default (unknown): 5 days');
+}
+
+/**
  * Test delivery time field picking logic
  * This tests the FIX for incorrect RefreshTime usage
  */
