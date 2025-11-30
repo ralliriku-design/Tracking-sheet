@@ -709,10 +709,14 @@ function ADHOC_ProcessSheet(sourceSpreadsheetId, opts) {
       };
     }
 
-    // Poimi created & delivered päivät
+    // Poimi created & delivered päivät sekä laske SLA
     var createdDt = pickCreatedDate_(res.events || []);
     var deliveredDt = pickDeliveredDate_(res.events || []);
     var daysToDeliver = (createdDt && deliveredDt) ? daysBetween_(createdDt, deliveredDt) : '';
+    
+    // Laske SLA käyttäen maakohtaisia rajoja (SLA_RAJAT)
+    var country = row.country || guessCountryFromEvents_(res.events || []);
+    var slaResult = SLA_computeRuleBased_(res.events || [], country);
 
     results.push({
       id: id,
@@ -722,7 +726,10 @@ function ADHOC_ProcessSheet(sourceSpreadsheetId, opts) {
       createdISO: createdDt ? createdDt.toISOString() : '',
       deliveredISO: deliveredDt ? deliveredDt.toISOString() : '',
       daysToDeliver: daysToDeliver,
-      country: row.country || guessCountryFromEvents_(res.events || []),
+      country: country,
+      slaStatus: slaResult.status,
+      slaTransportDays: slaResult.transportDays !== null ? slaResult.transportDays : '',
+      slaLimitDays: slaResult.slaLimitDays !== null ? slaResult.slaLimitDays : '',
       lastEventTime: res.lastEvent && res.lastEvent.time ? res.lastEvent.time : '',
       lastEventDesc: res.lastEvent && res.lastEvent.description ? res.lastEvent.description : '',
       eventsJson: JSON.stringify(res.events || [])
@@ -736,6 +743,7 @@ function ADHOC_ProcessSheet(sourceSpreadsheetId, opts) {
     return [
       r.id, r.carrier, r.delivered, r.status,
       r.createdISO, r.deliveredISO, r.daysToDeliver, r.country,
+      r.slaStatus, r.slaTransportDays, r.slaLimitDays,
       yearWeek_(r.deliveredISO || r.createdISO || r.lastEventTime || ''),
       r.lastEventTime, r.lastEventDesc, r.eventsJson
     ];
@@ -907,6 +915,43 @@ function tryScanAcrossCarriers_(id, opts) {
   return { id: id, carrier: '', delivered: false, status: 'NOT_FOUND', events: [] };
 }
 
+/**
+ * Country-specific SLA limits (in days).
+ * Defines the maximum allowed delivery time for each country.
+ * Used by SLA_computeRuleBased_ to determine if delivery meets SLA.
+ * 
+ * Key: Country code (ISO 3166-1 alpha-2)
+ * Value: Maximum delivery days
+ * 
+ * Examples:
+ * - Finland (FI): 2 days
+ * - Sweden (SE): 3 days
+ * - Norway (NO): 3 days
+ * - Denmark (DK): 3 days
+ * - Estonia (EE): 2 days
+ * - Default: 5 days for unknown countries
+ * 
+ * Note: Both 'UK' and 'GB' are supported for United Kingdom (GB is official ISO code)
+ */
+var SLA_RAJAT = {
+  'FI': 2,    // Finland - domestic, fast delivery
+  'SE': 3,    // Sweden - Nordic neighbor
+  'NO': 3,    // Norway - Nordic neighbor
+  'DK': 3,    // Denmark - Nordic neighbor
+  'EE': 2,    // Estonia - Baltic, close
+  'LV': 3,    // Latvia - Baltic
+  'LT': 3,    // Lithuania - Baltic
+  'DE': 4,    // Germany - Central Europe
+  'PL': 4,    // Poland - Eastern Europe
+  'NL': 4,    // Netherlands - Western Europe
+  'BE': 4,    // Belgium - Western Europe
+  'FR': 5,    // France - Western Europe
+  'ES': 5,    // Spain - Southern Europe
+  'IT': 5,    // Italy - Southern Europe
+  'GB': 4,    // Great Britain (official ISO code)
+  'UK': 4     // United Kingdom (common alternative code)
+};
+
 var ACCEPTED_PATTERNS_ = [
   /accepted/i, /received/i, /handed\s*over/i, /lodged/i, /picked\s*up/i,
   /vastaanotettu/i, /luovutettu/i, /postitettu/i, /rekisteröity/i
@@ -916,6 +961,23 @@ var DELIVERED_PATTERNS_ = [
   /toimitettu/i, /luovutettu\s+vastaanottajalle/i, /utlevert/i
 ];
 
+/**
+ * Pick created/departure date from tracking events.
+ * Identifies when package journey started (accepted, picked up, handed over).
+ * 
+ * Priority logic:
+ * 1. Look for "accepted"/"received"/"handed over" events (package entered system)
+ * 2. Use earliest such event as start date
+ * 3. Fallback to earliest event if no accepted event found
+ * 
+ * This function is used by:
+ * - SLA_computeRuleBased_ for transport time start date
+ * - ADHOC_ProcessSheet for delivery time calculation
+ * - Transport time = pickDeliveredDate_ - pickCreatedDate_
+ * 
+ * @param {Array} events - Array of tracking events
+ * @return {Date|null} Created/departure date or null
+ */
 function pickCreatedDate_(events) {
   var best = null;
   for (var i = 0; i < events.length; i++) {
@@ -937,20 +999,147 @@ function pickCreatedDate_(events) {
   return best;
 }
 
+/**
+ * Pick delivered/closing date from tracking events.
+ * Identifies when package was actually delivered based on event descriptions
+ * and location information. Uses tracking location to verify true delivery.
+ * 
+ * Priority logic:
+ * 1. Look for "delivered" events in tracking history with location info
+ * 2. Use earliest delivered event (first delivery attempt)
+ * 3. Verify delivery by checking location field is populated
+ * 
+ * This function is used by:
+ * - SLA_computeRuleBased_ for SLA calculation
+ * - ADHOC_ProcessSheet for delivery time analysis
+ * - Transport time calculations (departure → delivery)
+ * 
+ * @param {Array} events - Array of tracking events with time, description, location
+ * @return {Date|null} Delivered date or null if not delivered
+ */
 function pickDeliveredDate_(events) {
   var best = null;
+  var bestWithLocation = null;
+  
   for (var i = 0; i < events.length; i++) {
     var e = events[i];
     var t = parseIsoDate_(e && e.time);
     var dsc = (e && e.description) ? String(e.description) : '';
+    var loc = (e && e.location) ? String(e.location) : '';
     if (!t) continue;
+    
+    // Check if event indicates delivery (using description patterns)
     if (DELIVERED_PATTERNS_.some(function (re){ return re.test(dsc); })) {
-      if (!best || t < best) best = t; // ensimmäinen "delivered"-tyyppinen
+      // Track earliest delivered event overall
+      if (!best || t < best) {
+        best = t;
+      }
+      
+      // Prefer events with location information (indicates actual delivery point)
+      // Location helps verify that package truly reached destination
+      if (loc && (!bestWithLocation || t < bestWithLocation)) {
+        bestWithLocation = t;
+      }
     }
   }
-  return best;
+  
+  // Return event with location if found, otherwise return any delivered event
+  return bestWithLocation || best;
 }
 
+/**
+ * Compute SLA status based on country-specific rules.
+ * Calculates transport time from departure (created) date to delivery date,
+ * then compares against country-specific SLA limit from SLA_RAJAT.
+ * 
+ * Uses:
+ * - pickCreatedDate_(events) to get departure/start date
+ * - pickDeliveredDate_(events) to get arrival/delivered date (with location verification)
+ * - guessCountryFromEvents_(events) to determine destination country
+ * - daysBetween_(d1, d2) to calculate transport time
+ * - SLA_RAJAT[country] to get country-specific limit
+ * 
+ * @param {Array} events - Array of tracking events
+ * @param {string} countryHint - Optional country code hint (if known from other sources)
+ * @return {Object} SLA result with status, days, limit, country
+ * 
+ * Example result:
+ * {
+ *   status: 'OK' | 'LATE' | 'PENDING' | 'UNKNOWN',
+ *   transportDays: 2,
+ *   slaLimitDays: 2,
+ *   country: 'FI',
+ *   createdDate: Date object,
+ *   deliveredDate: Date object
+ * }
+ * 
+ * Test cases:
+ * - FI domestic: created Mon 10:00, delivered Wed 12:00 → 2 days, SLA limit 2 → OK
+ * - SE delivery: created Mon, delivered Fri → 4 days, SLA limit 3 → LATE
+ * - NO delivery: created Mon, delivered Wed → 2 days, SLA limit 3 → OK
+ * - Unknown country: uses default limit 5 days
+ */
+function SLA_computeRuleBased_(events, countryHint) {
+  var result = {
+    status: 'UNKNOWN',
+    transportDays: null,
+    slaLimitDays: null,
+    country: '',
+    createdDate: null,
+    deliveredDate: null
+  };
+  
+  // Get created and delivered dates from events
+  var createdDate = pickCreatedDate_(events);
+  var deliveredDate = pickDeliveredDate_(events);
+  
+  result.createdDate = createdDate;
+  result.deliveredDate = deliveredDate;
+  
+  // Determine country (use hint if provided, otherwise guess from events)
+  var country = countryHint ? String(countryHint).trim().toUpperCase() : '';
+  if (!country || country.length !== 2) {
+    country = guessCountryFromEvents_(events);
+  }
+  result.country = country;
+  
+  // Get country-specific SLA limit (default to 5 days if country unknown)
+  var slaLimit = SLA_RAJAT[country] || 5;
+  result.slaLimitDays = slaLimit;
+  
+  // If not delivered yet, status is PENDING
+  if (!deliveredDate) {
+    result.status = 'PENDING';
+    return result;
+  }
+  
+  // If no created date, cannot calculate SLA
+  if (!createdDate) {
+    result.status = 'UNKNOWN';
+    return result;
+  }
+  
+  // Calculate transport time using daysBetween_
+  var transportDays = daysBetween_(createdDate, deliveredDate);
+  result.transportDays = transportDays;
+  
+  // Compare against SLA limit
+  if (transportDays <= slaLimit) {
+    result.status = 'OK';
+  } else {
+    result.status = 'LATE';
+  }
+  
+  return result;
+}
+
+/**
+ * Guess country from tracking events.
+ * Examines location field in events to extract country code.
+ * Used for country-specific SLA calculation.
+ * @param {Array} events - Array of tracking events
+ * @return {string} Country code (e.g., 'FI', 'SE') or empty string
+ */
 function guessCountryFromEvents_(events) {
   // Yritä poimia viimeisistä tapahtumista maa (jos mainitaan)
   for (var i = events.length - 1; i >= 0; i--) {
@@ -973,12 +1162,20 @@ function ensureAdhocResultsHeader_(sh) {
     sh.appendRow([
       'ID','Carrier','Delivered','Status',
       'CreatedISO','DeliveredISO','DaysToDeliver','Country',
+      'SLA_Status','SLA_TransportDays','SLA_LimitDays',
       'Week','LastEventTime','LastEventDesc','Events(JSON)'
     ]);
   }
 }
 
 function parseIsoDate_(s) { if (!s) return null; var t = Date.parse(String(s)); return isNaN(t) ? null : new Date(t); }
+/**
+ * Calculate days between two dates (transport time calculation).
+ * Used for SLA and lead time calculations.
+ * @param {Date} d1 - Start date (departure/created)
+ * @param {Date} d2 - End date (delivered/closing)
+ * @return {number} Days between dates (rounded)
+ */
 function daysBetween_(d1, d2) { var ms = d2.getTime() - d1.getTime(); return Math.round(ms / 86400000); }
 
 function yearWeek_(isoStr) {
